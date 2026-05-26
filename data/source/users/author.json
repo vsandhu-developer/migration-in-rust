@@ -1,0 +1,106 @@
+[
+  {
+    "image": "IMG_3",
+    "wpId": 87138,
+    "username": "dallasknoxxx",
+    "email": "",
+    "slug": "dallasknoxxx",
+    "roles": ["author"]
+  },
+  {
+    "image": "IMG_0",
+    "wpId": 67552,
+    "username": "andyoh",
+    "email": "ari@squirt.org",
+    "slug": "andyoh",
+    "roles": ["author"]
+  },
+  {
+    "image": "IMG_0",
+    "wpId": 38789,
+    "username": "sgtcoach",
+    "email": "",
+    "slug": "sgtcoach",
+    "roles": ["editor"]
+  },
+  {
+    "image": "IMG_0",
+    "wpId": 47614,
+    "username": "admin06",
+    "email": "mitchell.cheeseman@ptp.media",
+    "slug": "admin06",
+    "roles": ["editor"]
+  },
+  {
+    "image": "IMG_4",
+    "wpId": 41572,
+    "username": "GarethJ",
+    "email": "",
+    "slug": "garethj",
+    "roles": ["editor"]
+  },
+  {
+    "image": "IMG_6",
+    "wpId": 44525,
+    "username": "xtramagazine",
+    "email": "dailysquirt+xtramagazine@dailyxtra.com",
+    "slug": "xtramagazine",
+    "roles": ["editor"]
+  },
+  {
+    "image": "IMG_0",
+    "wpId": 38575,
+    "username": "FriendsofSquirt",
+    "email": "",
+    "slug": "friendsofsquirt",
+    "roles": ["editor"]
+  },
+  {
+    "image": "IMG_1",
+    "wpId": 42542,
+    "username": "admin27",
+    "email": "",
+    "slug": "admin27",
+    "roles": ["administrator"]
+  },
+  {
+    "image": "IMG_0",
+    "wpId": 48175,
+    "username": "admin19",
+    "email": "",
+    "slug": "admin19",
+    "roles": ["editor"]
+  },
+  {
+    "image": "IMG_0",
+    "wpId": 48392,
+    "username": "admin10",
+    "email": "",
+    "slug": "admin10",
+    "roles": ["editor"]
+  },
+  {
+    "image": "IMG_0",
+    "wpId": 47403,
+    "username": "NickC",
+    "email": "nickcoveney@me.com",
+    "slug": "nickc",
+    "roles": ["contributor"]
+  },
+  {
+    "image": "IMG_0",
+    "wpId": 52703,
+    "username": "handsup53",
+    "email": "",
+    "slug": "handsup53",
+    "roles": ["administrator"]
+  },
+  {
+    "image": "IMG_0",
+    "wpId": 65532,
+    "username": "Sex Coach Chris Cherrie",
+    "email": "coachchrischerrie@gmail.com",
+    "slug": "sex-coach-chris-cherrie",
+    "roles": ["editor"]
+  }
+]

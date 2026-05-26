@@ -1,0 +1,72 @@
+{
+  "porn-&-play": {
+    "WPCategoryId": 1,
+    "dsName": "Porn & Play",
+    "dsSlug": "porn-and-play",
+    "accessLevel": "Public",
+    "SubCategories": {
+      "squirt-studios": {
+        "WPCategoryId": 5408,
+        "dsName": "Latest Studio Releases",
+        "dsSlug": "latest-studio-releases",
+        "accessLevel": "Public"
+      },
+      "gay-porn": {
+        "WPCategoryId": 44,
+        "dsName": "Latest Studio Releases",
+        "dsSlug": "latest-studio-releases",
+        "accessLevel": "Public"
+      },
+      "horny-men": {
+        "WPCategoryId": 2456,
+        "dsName": "Latest Studio Releases",
+        "dsSlug": "latest-studio-releases",
+        "accessLevel": "Public"
+      },
+      "mega-dirty-gay-pics": {
+        "WPCategoryId": 45,
+        "dsName": "Latest Studio Releases",
+        "dsSlug": "latest-studio-releases",
+        "accessLevel": "Public"
+      },
+      "ummm-wow": {
+        "WPCategoryId": 16,
+        "dsName": "Latest Studio Releases",
+        "dsSlug": "latest-studio-releases",
+        "accessLevel": "Public"
+      },
+      "who-would-you-choose": {
+        "WPCategoryId": 27,
+        "dsName": "Latest Studio Releases",
+        "dsSlug": "latest-studio-releases",
+        "accessLevel": "Public"
+      },
+      "model-of-the-day": {
+        "WPCategoryId": 15,
+        "dsName": "Certified Hottie",
+        "dsSlug": "certified-hottie",
+        "accessLevel": "Public"
+      },
+      "erotic-stories": {
+        "WPCategoryId": 3748,
+        "dsName": "Erotic Stories",
+        "dsSlug": "erotic-stories",
+        "accessLevel": "Public"
+      }
+    }
+  },
+  "hookups-&-dating": {
+    "WPCategoryId": 2,
+    "dsName": "Hookups & Dating",
+    "dsSlug": "hookups-and-dating",
+    "accessLevel": "Public",
+    "SubCategories": {
+      "versatile": {
+        "WPCategoryId": 3174,
+        "dsName": "Dating",
+        "dsSlug": "dating",
+        "accessLevel": "Public"
+      }
+    }
+  }
+}

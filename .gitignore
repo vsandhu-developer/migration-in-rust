@@ -1,0 +1,9 @@
+/target
+/logs
+/data/users/downloaded
+/data/incomplete
+/data/processed
+/data/mappings
+/data/reports
+/data/config/config.json
+**/*.lock
