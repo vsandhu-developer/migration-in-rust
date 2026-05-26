@@ -231,6 +231,12 @@ impl StrapiClient {
     pub async fn create_ds_category(
         &self, name: &str, slug: &str, access_level: &str,
     ) -> Result<StrapiEntityResult> {
+        if self.dry_run {
+            return Ok(StrapiEntityResult {
+                id: -1, document_id: format!("dry-{slug}"),
+                name: name.into(), slug: slug.into(),
+            });
+        }
         let body = json!({ "data": { "Name": name, "Slug": slug, "Access_Level": access_level } });
         let url = self.build_api_url("/api/ds-categories");
         let resp = self.http.post(&url, &body.to_string(), &self.auth_headers(true)).await?;
@@ -240,6 +246,13 @@ impl StrapiClient {
     pub async fn create_ds_sub_category(
         &self, name: &str, slug: &str, access_level: &str, parent_document_id: &str,
     ) -> Result<StrapiEntityResult> {
+        if self.dry_run {
+            let _ = parent_document_id;
+            return Ok(StrapiEntityResult {
+                id: -1, document_id: format!("dry-{slug}"),
+                name: name.into(), slug: slug.into(),
+            });
+        }
         let body = json!({
             "data": {
                 "Name": name,
@@ -329,7 +342,9 @@ impl StrapiClient {
     pub async fn create_ds_author(&self, body: &str) -> Result<HttpResponse> {
         if self.dry_run {
             tracing::info!(target: "dry_run", endpoint = "/api/ds-authors", size = body.len(), "skipped POST");
-            return Ok(Self::fake_ok(r#"{"data":{"id":-1}}"#));
+            // AuthorMigrator requires id > 0 to populate MappingCache; a positive
+            // stub is what unblocks the article-transformer ds_author validation.
+            return Ok(Self::fake_ok(r#"{"data":{"id":1}}"#));
         }
         let url = self.build_api_url("/api/ds-authors");
         self.http.post(&url, body, &self.auth_headers(true)).await

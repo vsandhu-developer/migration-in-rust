@@ -213,7 +213,8 @@ async fn main() -> Result<()> {
         let runner = MigrationRunner::new(cfg.clone(), wp_http.clone(), strapi_http.clone(), cache.clone(), logger.clone())
             .with_dry_run(args.dry_run)
             .with_max_articles(args.max_articles)
-            .with_wp_per_page(args.wp_per_page);
+            .with_wp_per_page(args.wp_per_page)
+            .with_retry_partial(args.retry_partial);
         if let Err(e) = runner.run().await {
             error!(error = ?e, "article migration failed");
         }

@@ -2,11 +2,15 @@
 
 use anyhow::{anyhow, Context, Result};
 use serde_json::Value;
+use tracing::info;
 
 use crate::infrastructure::config::Config;
 use crate::infrastructure::http::HttpClient;
 use crate::models::{CoverImage, WpComment, WpPost};
 use crate::services::excerpt_normalizer::ExcerptNormalizer;
+
+// WP REST API rejects per_page above this with HTTP 400.
+const WP_MAX_PER_PAGE: i32 = 100;
 
 pub struct WpClient {
     cfg: Config,
@@ -18,9 +22,9 @@ impl WpClient {
         Self { cfg, http }
     }
 
-    fn build_posts_url(&self, per_page: i32, embed: bool) -> String {
+    fn build_posts_url(&self, per_page: i32, page: i32, embed: bool) -> String {
         let mut base = self.cfg.wp_base_url.trim_end_matches('/').to_string();
-        base.push_str(&format!("/wp-json/wp/v2/posts?per_page={}", per_page));
+        base.push_str(&format!("/wp-json/wp/v2/posts?per_page={}&page={}", per_page, page));
         if embed {
             base.push_str("&_embed=wp:featuredmedia,replies");
         }
@@ -28,7 +32,62 @@ impl WpClient {
     }
 
     pub async fn get_posts(&self, per_page: i32, embed: bool) -> Result<Vec<WpPost>> {
-        let url = self.build_posts_url(per_page, embed);
+        self.fetch_page(per_page.min(WP_MAX_PER_PAGE), 1, embed).await
+    }
+
+    /// Paginated fetch. Loops `/wp-json/wp/v2/posts?page=N&per_page=100` until
+    /// `target` posts collected or WP returns fewer than `per_page` (last page).
+    /// `target = 0` falls back to a single page.
+    pub async fn get_posts_n(&self, target: usize, embed: bool) -> Result<Vec<WpPost>> {
+        if target == 0 {
+            return self.get_posts(WP_MAX_PER_PAGE, embed).await;
+        }
+        let per_page = WP_MAX_PER_PAGE;
+        let mut out: Vec<WpPost> = Vec::with_capacity(target);
+        let mut page: i32 = 1;
+        loop {
+            let batch = self.fetch_page(per_page, page, embed).await?;
+            let got = batch.len();
+            info!(page, got, accumulated = out.len() + got, target, "WP page fetched");
+            out.extend(batch);
+            if out.len() >= target {
+                out.truncate(target);
+                break;
+            }
+            if got < per_page as usize {
+                break; // last page
+            }
+            page += 1;
+        }
+        Ok(out)
+    }
+
+    /// Fetch specific posts by WP id using `?include=id1,id2,...`.
+    /// Chunks ids in groups of 100 (WP per_page cap) and concatenates results.
+    pub async fn get_posts_by_ids(&self, ids: &[i64], embed: bool) -> Result<Vec<WpPost>> {
+        if ids.is_empty() { return Ok(Vec::new()); }
+        let mut out: Vec<WpPost> = Vec::with_capacity(ids.len());
+        for chunk in ids.chunks(WP_MAX_PER_PAGE as usize) {
+            let include = chunk.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+            let mut url = self.cfg.wp_base_url.trim_end_matches('/').to_string();
+            url.push_str(&format!("/wp-json/wp/v2/posts?include={}&per_page={}", include, WP_MAX_PER_PAGE));
+            if embed { url.push_str("&_embed=wp:featuredmedia,replies"); }
+            let resp = self.http.get(&url, &[]).await?;
+            if !resp.is_success() {
+                return Err(anyhow!("WP get_posts_by_ids: HTTP {}: {}", resp.status_code, resp.body));
+            }
+            let v: Value = serde_json::from_str(&resp.body).context("WP get_posts_by_ids: parse JSON")?;
+            let arr = v.as_array().ok_or_else(|| anyhow!("WP get_posts_by_ids: not an array"))?;
+            info!(chunk_size = chunk.len(), returned = arr.len(), "WP include-batch fetched");
+            for item in arr {
+                if let Some(post) = Self::parse_post(item) { out.push(post); }
+            }
+        }
+        Ok(out)
+    }
+
+    async fn fetch_page(&self, per_page: i32, page: i32, embed: bool) -> Result<Vec<WpPost>> {
+        let url = self.build_posts_url(per_page, page, embed);
         let resp = self.http.get(&url, &[]).await?;
         if !resp.is_success() {
             return Err(anyhow!("WP getPosts: HTTP {}: {}", resp.status_code, resp.body));

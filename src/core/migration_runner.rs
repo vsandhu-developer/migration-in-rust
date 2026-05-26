@@ -12,7 +12,7 @@ use tracing::{info, warn};
 
 use crate::clients::{StrapiClient, WpClient};
 use crate::core::ArticleMigrationOrchestrator;
-use crate::infrastructure::cache::{MappingCache, ProcessedPostTracker};
+use crate::infrastructure::cache::{MappingCache, PartialArticleCache, ProcessedPostTracker};
 use crate::infrastructure::config::Config;
 use crate::infrastructure::http::HttpClient;
 use crate::infrastructure::logging::{LogLevel, LogMetadata, Logger};
@@ -29,6 +29,7 @@ pub struct MigrationRunner {
     dry_run: bool,
     max_articles: usize,
     wp_per_page: i32,
+    retry_partial: bool,
 }
 
 impl MigrationRunner {
@@ -51,12 +52,14 @@ impl MigrationRunner {
             dry_run: false,
             max_articles: 0,
             wp_per_page: 50,
+            retry_partial: false,
         }
     }
 
     pub fn with_dry_run(mut self, dry_run: bool) -> Self { self.dry_run = dry_run; self }
     pub fn with_max_articles(mut self, n: usize) -> Self { self.max_articles = n; self }
     pub fn with_wp_per_page(mut self, n: i32) -> Self { self.wp_per_page = n; self }
+    pub fn with_retry_partial(mut self, r: bool) -> Self { self.retry_partial = r; self }
 
     pub async fn run(&self) -> Result<()> {
         let wall_start = Instant::now();
@@ -74,13 +77,23 @@ impl MigrationRunner {
             self.failed_comments_path.clone(),
         );
 
-        // Fetch posts
+        // Fetch posts: retry mode fetches only wp_post_ids from partial-articles.json,
+        // otherwise paginate when a target is set, otherwise one page.
         let t = Instant::now();
-        let mut posts = wp_client.get_posts(self.wp_per_page, true).await?;
-        if self.max_articles > 0 && posts.len() > self.max_articles {
-            posts.truncate(self.max_articles);
-            info!(limit = self.max_articles, "truncating to max_articles");
-        }
+        let posts = if self.retry_partial {
+            let partials = PartialArticleCache::load(&self.partial_path)?;
+            let ids: Vec<i64> = partials.keys().copied().collect();
+            info!(count = ids.len(), path = %self.partial_path.display(), "retry: loaded wp_post_ids from partial-articles");
+            if ids.is_empty() {
+                warn!("retry: no wp_post_ids in partial-articles.json — nothing to do");
+                return Ok(());
+            }
+            wp_client.get_posts_by_ids(&ids, true).await?
+        } else if self.max_articles > 0 {
+            wp_client.get_posts_n(self.max_articles, true).await?
+        } else {
+            wp_client.get_posts(self.wp_per_page, true).await?
+        };
         let fetch_ms = t.elapsed().as_secs_f64() * 1000.0;
         info!(count = posts.len(), duration_ms = fetch_ms, "fetched WP posts");
 
@@ -118,6 +131,11 @@ impl MigrationRunner {
                 if !self.dry_run {
                     if let Err(e) = self.processed.mark_processed(post.id) {
                         warn!(error = %e, "mark_processed failed");
+                    }
+                }
+                if self.retry_partial {
+                    if let Err(e) = PartialArticleCache::remove(&self.partial_path, post.id) {
+                        warn!(wp_post_id = post.id, error = %e, "retry: remove from partial-articles failed");
                     }
                 }
                 success += 1;

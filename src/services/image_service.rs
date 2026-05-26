@@ -2,10 +2,14 @@
 //! return blockIndex -> Strapi URL map. Strict and lenient modes.
 
 use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::path::Path;
 use std::time::Instant;
 
 use anyhow::Result;
 use tracing::{info, warn};
+
+const SNAPSHOT_DIR: &str = "data/incomplete/images-snapshot";
 
 use crate::clients::{MediaUploadItem, StrapiClient, UploadedMedia};
 use crate::infrastructure::http::HttpClient;
@@ -139,6 +143,9 @@ impl ImageService {
         }
 
         let file_name = filename_from_url(&url).unwrap_or_else(|| "cover.bin".to_string());
+        if self.strapi.is_dry_run() {
+            snapshot_to_disk(&file_name, &bin.data, &url);
+        }
         let item = MediaUploadItem {
             block_index: -1,
             mime_type: infer_mime(&file_name),
@@ -196,6 +203,9 @@ impl ImageService {
             if let Some(b) = bin {
                 summary.total_bytes += b.data.len();
                 let file_name = filename_from_url(src).unwrap_or_else(|| format!("image-{}.bin", idx));
+                if self.strapi.is_dry_run() {
+                    snapshot_to_disk(&file_name, &b.data, src);
+                }
                 summary.items.push(DownloadedImageItem {
                     block_index: *idx,
                     source_url: src.clone(),
@@ -271,6 +281,36 @@ fn filename_from_url(url: &str) -> Option<String> {
     let without_frag = without_query.split('#').next().unwrap_or(without_query);
     let name = without_frag.rsplit('/').next().unwrap_or("");
     if name.is_empty() { None } else { Some(name.to_string()) }
+}
+
+fn snapshot_to_disk(file_name: &str, data: &[u8], source_url: &str) {
+    let dir = Path::new(SNAPSHOT_DIR);
+    if let Err(e) = fs::create_dir_all(dir) {
+        warn!(error = %e, "snapshot: failed to create directory");
+        return;
+    }
+    let safe = sanitize_filename(file_name);
+    let path = dir.join(&safe);
+    match fs::write(&path, data) {
+        Ok(()) => {
+            let manifest = dir.join("manifest.csv");
+            let line = format!("{}\t{}\t{}\n", safe, data.len(), source_url);
+            let _ = append_line(&manifest, &line);
+        }
+        Err(e) => warn!(file = %safe, error = %e, "snapshot: write failed"),
+    }
+}
+
+fn append_line(path: &Path, line: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut f = fs::OpenOptions::new().create(true).append(true).open(path)?;
+    f.write_all(line.as_bytes())
+}
+
+fn sanitize_filename(name: &str) -> String {
+    name.chars()
+        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') { c } else { '_' })
+        .collect()
 }
 
 fn infer_mime(file_name: &str) -> String {

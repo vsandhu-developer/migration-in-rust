@@ -1,14 +1,14 @@
 {
-  "enabled": false,
-  "migratePerformers": false,
-  "migrateStudios": false,
-  "migrateCategories": false,
-  "migrateSubCategories": false,
+  "enabled": true,
+  "migratePerformers": true,
+  "migrateStudios": true,
+  "migrateCategories": true,
+  "migrateSubCategories": true,
   "downloadUserImages": false,
   "uploadUserImages": false,
-  "migrateAdminUsers": false,
-  "migrateUsers": false,
-  "migrateAuthors": false,
+  "migrateAdminUsers": true,
+  "migrateUsers": true,
+  "migrateAuthors": true,
   "adminUserBatchSize": 100,
   "userBatchSize": 200
 }

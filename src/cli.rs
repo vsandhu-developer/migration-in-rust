@@ -41,6 +41,11 @@ pub struct Cli {
     /// Articles-phase page size for WP API.
     #[arg(long, default_value_t = 50)]
     pub wp_per_page: i32,
+
+    /// Retry only wp_post_ids from data/incomplete/partial-articles.json.
+    /// Requires --only-phase articles. Successful retries are removed from the file.
+    #[arg(long)]
+    pub retry_partial: bool,
 }
 
 impl Cli {
