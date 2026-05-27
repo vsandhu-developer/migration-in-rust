@@ -13,6 +13,8 @@ pub struct Config {
     pub strapi_base_url: String,
     #[serde(default)]
     pub token: String,
+    #[serde(rename = "migrationToken", default)]
+    pub migration_token: String,
 }
 
 impl Config {
@@ -35,6 +37,9 @@ impl Config {
         }
         if let Ok(v) = env::var("STRAPI_TOKEN") {
             cfg.token = v;
+        }
+        if let Ok(v) = env::var("MIGRATION_API_TOKEN") {
+            cfg.migration_token = v;
         }
         Ok(cfg)
     }

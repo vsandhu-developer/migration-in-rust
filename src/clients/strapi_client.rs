@@ -64,6 +64,24 @@ impl StrapiClient {
         h
     }
 
+    /// Headers for the custom `/migration/*` routes — Strapi checks
+    /// `MIGRATION_API_TOKEN` via `Authorization: Bearer`, not the regular API token.
+    fn migration_auth_headers(&self, content_json: bool) -> Vec<String> {
+        let mut h = Vec::new();
+        let token = if !self.cfg.migration_token.is_empty() {
+            &self.cfg.migration_token
+        } else {
+            &self.cfg.token
+        };
+        if !token.is_empty() {
+            h.push(format!("Authorization: Bearer {}", token));
+        }
+        if content_json {
+            h.push("Content-Type: application/json".to_string());
+        }
+        h
+    }
+
     fn build_api_url(&self, endpoint: &str) -> String {
         let mut base = self.cfg.strapi_base_url.trim_end_matches('/').to_string();
         if !endpoint.starts_with('/') {
@@ -336,7 +354,7 @@ impl StrapiClient {
             return Ok(Self::fake_ok(r#"{"data":{"id":-1}}"#));
         }
         let url = self.build_api_url("/migration/add-comment");
-        self.http.post(&url, body, &self.auth_headers(true)).await
+        self.http.post(&url, body, &self.migration_auth_headers(true)).await
     }
 
     pub async fn create_ds_author(&self, body: &str) -> Result<HttpResponse> {
@@ -356,7 +374,7 @@ impl StrapiClient {
             return Ok(Self::fake_ok(r#"{"data":{"successMap":{},"failedAdmins":[]}}"#));
         }
         let url = self.build_api_url("/migration/bulk-add-admin-users");
-        self.http.post(&url, body, &self.auth_headers(true)).await
+        self.http.post(&url, body, &self.migration_auth_headers(true)).await
     }
 
     pub async fn bulk_add_users(&self, body: &str) -> Result<HttpResponse> {
@@ -365,13 +383,13 @@ impl StrapiClient {
             return Ok(Self::fake_ok(r#"{"data":{"successMap":{},"failedUsers":[]}}"#));
         }
         let url = self.build_api_url("/migration/bulk-add-users");
-        self.http.post(&url, body, &self.auth_headers(true)).await
+        self.http.post(&url, body, &self.migration_auth_headers(true)).await
     }
 
     pub async fn find_existing_users(&self, identifiers: &[String]) -> Result<Value> {
-        let url = self.build_api_url("/api/migration/find-users");
+        let url = self.build_api_url("/migration/find-users");
         let body = json!({ "identifiers": identifiers });
-        match self.http.post(&url, &body.to_string(), &self.auth_headers(true)).await {
+        match self.http.post(&url, &body.to_string(), &self.migration_auth_headers(true)).await {
             Ok(resp) if resp.is_success() => {
                 Ok(serde_json::from_str::<Value>(&resp.body).unwrap_or(Value::Object(Default::default())))
             }

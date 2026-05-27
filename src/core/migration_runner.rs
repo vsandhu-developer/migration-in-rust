@@ -30,6 +30,7 @@ pub struct MigrationRunner {
     max_articles: usize,
     wp_per_page: i32,
     retry_partial: bool,
+    skip_images: bool,
 }
 
 impl MigrationRunner {
@@ -53,6 +54,7 @@ impl MigrationRunner {
             max_articles: 0,
             wp_per_page: 50,
             retry_partial: false,
+            skip_images: false,
         }
     }
 
@@ -60,6 +62,7 @@ impl MigrationRunner {
     pub fn with_max_articles(mut self, n: usize) -> Self { self.max_articles = n; self }
     pub fn with_wp_per_page(mut self, n: i32) -> Self { self.wp_per_page = n; self }
     pub fn with_retry_partial(mut self, r: bool) -> Self { self.retry_partial = r; self }
+    pub fn with_skip_images(mut self, s: bool) -> Self { self.skip_images = s; self }
 
     pub async fn run(&self) -> Result<()> {
         let wall_start = Instant::now();
@@ -75,7 +78,7 @@ impl MigrationRunner {
             self.logger.clone(),
             self.partial_path.clone(),
             self.failed_comments_path.clone(),
-        );
+        ).with_skip_images(self.skip_images);
 
         // Fetch posts: retry mode fetches only wp_post_ids from partial-articles.json,
         // otherwise paginate when a target is set, otherwise one page.

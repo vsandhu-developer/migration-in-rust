@@ -24,7 +24,7 @@ impl ArticleTransformer {
         StrapiArticlePayload {
             site: "Daily_Squirt".to_string(),
             title: ExcerptNormalizer::normalize_title(&post.title),
-            slug: post.slug.clone(),
+            slug: Self::sanitize_slug(&post.slug, post.id),
             excerpt: ExcerptNormalizer::normalize(&post.excerpt),
             publish_date: post.date.clone(),
             body: rebuilt_content.to_string(),
@@ -35,6 +35,33 @@ impl ArticleTransformer {
             ds_sub_category: cache.get_category_document_id(post.categories),
             allow_comment: post.comments_enabled,
             registration_cta_block: Self::extract_cta_blocks(blocks),
+        }
+    }
+
+    // Strapi `Slug` (uid) accepts only `/^[A-Za-z0-9-_.~]*$/`. WP slugs
+    // sometimes contain URL-encoded sequences (%e2%80%a6) or raw non-ASCII
+    // after a decode pass — both blow up validation. Replace any disallowed
+    // char with `-`, collapse runs, trim edges. Empty result -> fall back to
+    // `post-<wpId>` so the slug field never lands empty.
+    fn sanitize_slug(raw: &str, wp_id: i64) -> String {
+        let mut out = String::with_capacity(raw.len());
+        let mut last_dash = false;
+        for ch in raw.chars() {
+            let allowed = ch.is_ascii_alphanumeric()
+                || ch == '-' || ch == '_' || ch == '.' || ch == '~';
+            if allowed {
+                out.push(ch);
+                last_dash = ch == '-';
+            } else if !last_dash {
+                out.push('-');
+                last_dash = true;
+            }
+        }
+        let trimmed = out.trim_matches('-');
+        if trimmed.is_empty() {
+            format!("post-{wp_id}")
+        } else {
+            trimmed.to_string()
         }
     }
 

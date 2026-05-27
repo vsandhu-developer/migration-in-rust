@@ -280,7 +280,31 @@ fn filename_from_url(url: &str) -> Option<String> {
     let without_query = url.split('?').next().unwrap_or(url);
     let without_frag = without_query.split('#').next().unwrap_or(without_query);
     let name = without_frag.rsplit('/').next().unwrap_or("");
-    if name.is_empty() { None } else { Some(name.to_string()) }
+    if name.is_empty() { None } else { Some(cap_filename(name)) }
+}
+
+// Cap source filename so Strapi's sanitization + thumbnail_/small_/medium_/large_
+// prefixes + hash + extension still fit under the 255-byte OS filename limit.
+// Strapi crashes hard (uncaught ENAMETOOLONG → process exit) when this is exceeded,
+// taking down all in-flight image uploads. Seen with Google-CDN URLs like
+// /AD_4nXdQKm9...long_blob — sanitization roughly doubles those, blowing past 255.
+fn cap_filename(name: &str) -> String {
+    const MAX_LEN: usize = 80;
+    if name.len() <= MAX_LEN {
+        return name.to_string();
+    }
+    let (base, ext) = match name.rsplit_once('.') {
+        Some((b, e)) if e.len() <= 8 && !e.is_empty() => (b, format!(".{e}")),
+        _ => (name, String::new()),
+    };
+    let take = MAX_LEN.saturating_sub(ext.len());
+    let mut out = String::with_capacity(MAX_LEN);
+    for (i, ch) in base.char_indices() {
+        if i + ch.len_utf8() > take { break; }
+        out.push(ch);
+    }
+    out.push_str(&ext);
+    out
 }
 
 fn snapshot_to_disk(file_name: &str, data: &[u8], source_url: &str) {

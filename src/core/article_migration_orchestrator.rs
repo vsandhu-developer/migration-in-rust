@@ -36,6 +36,7 @@ pub struct ArticleMigrationOrchestrator {
     image_service: ImageService,
     partial_path: PathBuf,
     failed_comments_path: PathBuf,
+    skip_images: bool,
 }
 
 impl ArticleMigrationOrchestrator {
@@ -55,8 +56,11 @@ impl ArticleMigrationOrchestrator {
             image_service,
             partial_path: partial_path.into(),
             failed_comments_path: failed_comments_path.into(),
+            skip_images: false,
         }
     }
+
+    pub fn with_skip_images(mut self, s: bool) -> Self { self.skip_images = s; self }
 
     fn log(&self, level: LogLevel, op: &str, post_id: i64, message: &str) {
         self.logger.log(
@@ -91,7 +95,7 @@ impl ArticleMigrationOrchestrator {
         let mut working_post = post.clone();
 
         // ---------------- 2. Cover image (non-fatal) ----------------
-        if !working_post.cover_image.source_url.is_empty() {
+        if !working_post.cover_image.source_url.is_empty() && !self.skip_images {
             let t = Instant::now();
             match self.image_service.process_cover_image(&working_post.cover_image.source_url).await {
                 Ok(cover) => {
@@ -135,7 +139,16 @@ impl ArticleMigrationOrchestrator {
         // ---------------- 3. Body images (STRICT) ----------------
         let image_blocks: Vec<&ContentBlock> = blocks.iter().filter(|b| b.is_image()).collect();
         let t = Instant::now();
-        let image_result = self.image_service.process_images_strict(&image_blocks).await;
+        let image_result = if self.skip_images {
+            // Synthesize a happy-path result so rebuild keeps original WP URLs
+            // (empty mapping = no substitutions in ContentRebuilder).
+            let mut r = crate::models::ImageProcessingResult::default();
+            r.success = true;
+            r.total_image_blocks_required = image_blocks.len() as i32;
+            r
+        } else {
+            self.image_service.process_images_strict(&image_blocks).await
+        };
         perf.body_images_time_ms = Some(t.elapsed().as_secs_f64() * 1000.0);
 
         self.logger.log(LogMetadata {
@@ -147,6 +160,7 @@ impl ArticleMigrationOrchestrator {
             successful_images: Some(image_result.successfully_processed_count),
             failed_images: Some(image_result.failed_image_urls.len() as i32),
             duration_ms: perf.body_images_time_ms,
+            message: if self.skip_images { Some("--skip-images: bypassed image processing".into()) } else { None },
             ..Default::default()
         });
 

@@ -46,6 +46,13 @@ pub struct Cli {
     /// Requires --only-phase articles. Successful retries are removed from the file.
     #[arg(long)]
     pub retry_partial: bool,
+
+    /// Skip cover + body image download/upload. Articles still POST to Strapi but
+    /// Cover_Image.Public is null and content blocks keep original WP image URLs.
+    /// Useful for fast validation runs (~100x faster) to surface schema/relation issues
+    /// without paying the image bandwidth cost.
+    #[arg(long)]
+    pub skip_images: bool,
 }
 
 impl Cli {

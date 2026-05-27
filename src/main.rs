@@ -214,7 +214,8 @@ async fn main() -> Result<()> {
             .with_dry_run(args.dry_run)
             .with_max_articles(args.max_articles)
             .with_wp_per_page(args.wp_per_page)
-            .with_retry_partial(args.retry_partial);
+            .with_retry_partial(args.retry_partial)
+            .with_skip_images(args.skip_images);
         if let Err(e) = runner.run().await {
             error!(error = ?e, "article migration failed");
         }
