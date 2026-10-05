@@ -50,6 +50,51 @@ impl ContentParser {
         out
     }
 
+    /// Old-importer CTA parity: returns the body with every top-level CTA block
+    /// removed (old ContentRebuilder dropped CTAs from the body) plus those CTA
+    /// blocks, whose `index` is exactly the block index `parse` assigns (old
+    /// `position_after_paragraph`). All other markup is kept verbatim.
+    pub fn split_ctas(html_content: &str) -> (String, Vec<ContentBlock>) {
+        let ctas = Self::parse(html_content)
+            .into_iter()
+            .filter(ContentBlock::is_cta)
+            .collect::<Vec<_>>();
+        if ctas.is_empty() {
+            return (html_content.to_owned(), ctas);
+        }
+        let mut doc = Html::parse_fragment(html_content);
+        let root = doc.root_element();
+        let remove = root
+            .children()
+            .filter(|child| ElementRef::wrap(*child).is_some_and(Self::yields_cta))
+            .map(|child| child.id())
+            .collect::<Vec<_>>();
+        for id in remove {
+            if let Some(mut node) = doc.tree.get_mut(id) {
+                node.detach();
+            }
+        }
+        (doc.root_element().inner_html(), ctas)
+    }
+
+    /// Mirrors `handle_element`'s classification order for a top-level element.
+    fn yields_cta(el: ElementRef) -> bool {
+        let name = el.value().name();
+        let class_attr = el.value().attr("class").unwrap_or("");
+        if name.eq_ignore_ascii_case("img") {
+            return false;
+        }
+        let is_image_wrapper = name.eq_ignore_ascii_case("figure")
+            || class_contains(class_attr, "wp-block-image")
+            || class_contains(class_attr, "wp-image");
+        if is_image_wrapper && find_descendant_by_tag(el, "img").is_some() {
+            return false;
+        }
+        (class_contains(class_attr, "wp-block-button")
+            && find_descendant(el, is_cta_element).is_some())
+            || is_cta_element(el)
+    }
+
     fn handle_element(el: ElementRef, index: &mut i32, out: &mut Vec<ContentBlock>) {
         let name = el.value().name();
         let class_attr = el.value().attr("class").unwrap_or("");

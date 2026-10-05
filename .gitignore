@@ -7,4 +7,6 @@
 /data/reports
 /data/config/config.json
 **/*.lock
+!Cargo.lock
 data
+/checkpoints

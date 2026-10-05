@@ -6,8 +6,26 @@ use scraper::{Html, Node};
 pub struct ExcerptNormalizer;
 
 const BLOCK_TAGS: &[&str] = &[
-    "br", "p", "div", "li", "section", "article", "blockquote", "header", "footer",
-    "tr", "td", "th", "ul", "ol", "h1", "h2", "h3", "h4", "h5", "h6",
+    "br",
+    "p",
+    "div",
+    "li",
+    "section",
+    "article",
+    "blockquote",
+    "header",
+    "footer",
+    "tr",
+    "td",
+    "th",
+    "ul",
+    "ol",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
 ];
 
 // Strapi ds-article.Excerpt has maxLength: 300. Posts longer than this 400 out.
@@ -32,7 +50,9 @@ impl ExcerptNormalizer {
         let mut units: usize = 0;
         for ch in s.chars() {
             let n = ch.len_utf16();
-            if units + n > budget { break; }
+            if units + n > budget {
+                break;
+            }
             accumulated.push(ch);
             units += n;
         }
@@ -98,7 +118,9 @@ impl ExcerptNormalizer {
     }
 
     fn extract_plain_text(html_in: &str) -> String {
-        if html_in.is_empty() { return String::new(); }
+        if html_in.is_empty() {
+            return String::new();
+        }
         let decoded = Self::decode_numeric_entities(html_in);
         // Wrap so scraper has a stable root.
         let doc = Html::parse_fragment(&decoded);
@@ -133,7 +155,9 @@ impl ExcerptNormalizer {
         let mut out = String::with_capacity(s.len());
         let mut prev_space = false;
         for ch in s.chars() {
-            if ch == '\r' { continue; }
+            if ch == '\r' {
+                continue;
+            }
             if ch.is_whitespace() {
                 if !prev_space && !out.is_empty() {
                     out.push(' ');
