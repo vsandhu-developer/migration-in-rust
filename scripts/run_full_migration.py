@@ -246,6 +246,8 @@ class Plan:
         cmd += ["--wp-per-page", str(self.args.wp_per_page)]
         if phase == "import" and self.args.media_concurrency:
             cmd += ["--media-concurrency", str(self.args.media_concurrency)]
+        if phase == "import" and self.args.record_batch_size:
+            cmd += ["--record-batch-size", str(self.args.record_batch_size)]
         return cmd
 
     def content_units(self, stage):
@@ -295,7 +297,7 @@ def token_check(config_path):
 
 def summarize(report):
     keys = ("phase", "selected", "created", "updated", "existing", "skipped", "failed", "placeholderEmail", "alreadyComplete",
-            "recovered", "mediaSelected", "mediaCreated", "mediaReused", "mediaFailed", "runId")
+            "recovered", "mediaSelected", "mediaCreated", "mediaReused", "mediaFailed", "recordRequests", "runId")
     out = {k: report[k] for k in keys if isinstance(report, dict) and k in report}
     if isinstance(report, dict) and report.get("failures"):
         codes = {}
@@ -501,6 +503,8 @@ def main(argv=None):
     ap.add_argument("--download-workers", type=int, default=4, help="generator image download workers (1..8)")
     ap.add_argument("--wp-per-page", type=int, default=50, help="importer --wp-per-page (1..100)")
     ap.add_argument("--media-concurrency", type=int, help="importer --media-concurrency for imports (1..8)")
+    ap.add_argument("--record-batch-size", type=int,
+                    help="importer --record-batch-size for imports (1..100; importer default 100, 1 = one request per record)")
     ap.add_argument("--inventory-skip-images", action="store_true", help="inventory without downloading media (--skip-images)")
     ap.add_argument("--binary", type=Path, help="importer binary (default target/release/migration-system, else target/debug)")
     ap.add_argument("--generator", type=Path, default=GENERATOR, help=argparse.SUPPRESS)

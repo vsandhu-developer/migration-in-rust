@@ -60,6 +60,10 @@ pub struct Cli {
     /// Record writes stay sequential.
     #[arg(long)]
     pub media_concurrency: Option<usize>,
+    /// Content imports: records per CMS batch request for non-article types (1-100, default 100;
+    /// 1 = one request per record). Falls back to single requests if the CMS lacks the route/scope.
+    #[arg(long)]
+    pub record_batch_size: Option<usize>,
     /// admin-users/users only: JSON array of {wpId,username,email,slug,image,roles}.
     #[arg(long)]
     pub users_file: Option<PathBuf>,

@@ -165,6 +165,17 @@ class Orchestrator(unittest.TestCase):
         self.assertEqual(len(self.calls()), n)
         self.assertIn("already completed", r.stdout)
 
+    def test_record_batch_size_reaches_imports_only(self):
+        self.assertEqual(self.run_orch().returncode, 0)
+        r = self.run_orch("--continue", "--record-batch-size", "50")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        for c in self.calls()[3:]:
+            phase = c[c.index("--phase") + 1]
+            if phase == "import":
+                self.assertEqual(c[c.index("--record-batch-size") + 1], "50")
+            else:
+                self.assertNotIn("--record-batch-size", c)
+
     def test_failed_unit_resumes_from_its_checkpoint(self):
         self.assertEqual(self.run_orch().returncode, 0)
         env = dict(self.env, FAKE_FAIL_ONCE="fdn-performer-2")

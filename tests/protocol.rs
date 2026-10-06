@@ -404,6 +404,7 @@ fn fixture(origin: &Url, count: usize) -> (tempfile::TempDir, Cli) {
         users_file: None,
         batch_size: None,
         media_concurrency: None,
+        record_batch_size: None,
     };
     (dir, cli)
 }
@@ -707,4 +708,279 @@ async fn media_concurrency_flag_bounds_parallel_uploads_and_keeps_records_sequen
         assert!(!cli.checkpoint.as_ref().unwrap().exists());
     }
     assert_eq!(state.lock().unwrap().uploads, 0);
+}
+
+// ---------------------------------------------------------------- record batches (comments)
+#[derive(Default)]
+struct Batch {
+    /// sourceKey -> targetDocumentId committed by the mock CMS.
+    records: BTreeMap<String, String>,
+    /// (path, item count) for every record write; GET lookups as ("GET", 0).
+    calls: Vec<(String, usize)>,
+    /// Status for the batch route instead of handling it (403/404/405: unavailable).
+    batch_status: Option<u16>,
+    /// sourceId rejected once with this item status (per-item failure).
+    reject: Option<(String, u16)>,
+    /// Commit the first batch, then answer 503 (lost response).
+    lose_first: bool,
+    /// Answer the first batch with a malformed (reordered) result list.
+    malformed_first: bool,
+}
+fn upsert(s: &mut Batch, run: &str, b: &Value) -> Result<Value, u16> {
+    let key = b["source"]["sourceKey"].as_str().unwrap().to_owned();
+    assert!(
+        b["data"]["user"]["sourceKey"].is_string() && b["data"]["article"]["sourceKey"].is_string()
+    );
+    if let Some((id, status)) = s.reject.clone() {
+        if b["source"]["sourceId"] == id {
+            s.reject = None;
+            return Err(status);
+        }
+    }
+    let operation = if s.records.contains_key(&key) {
+        "reused"
+    } else {
+        "created"
+    };
+    let id = format!("comment-doc-{}", b["source"]["sourceId"].as_str().unwrap());
+    s.records.insert(key.clone(), id.clone());
+    Ok(
+        json!({"runId":run,"type":"comment","sourceKey":key,"targetDocumentId":id,"operation":operation}),
+    )
+}
+async fn batch_cms(state: Arc<Mutex<Batch>>) -> Server {
+    server(move |r| {
+        assert!(r.headers.contains("authorization: Bearer synthetic-local-api-token"));
+        let mut s = state.lock().unwrap();
+        let run = format!("dsrun-{}", "e".repeat(48));
+        if r.method == "POST" && r.path == "/api/ds-migration/runs" {
+            return Reply::json(envelope(json!({"runId":run})));
+        }
+        if r.path.ends_with("/records/comment/batch") {
+            let b: Value = serde_json::from_slice(&r.body).unwrap();
+            let items = b["data"].as_array().unwrap().clone();
+            assert_eq!(b.as_object().unwrap().len(), 1);
+            assert!(!items.is_empty() && items.len() <= 100);
+            assert!(r.body.len() <= 512 * 1024 + 16);
+            s.calls.push(("batch".into(), items.len()));
+            if let Some(status) = s.batch_status {
+                return Reply::status(status);
+            }
+            let results = items
+                .iter()
+                .enumerate()
+                .map(|(i, item)| match upsert(&mut s, &run, item) {
+                    Ok(result) => json!({"index":i,"result":result}),
+                    Err(status) => json!({"index":i,"error":{"status":status,"code":"migration_target_changed"}}),
+                })
+                .collect::<Vec<_>>();
+            if s.lose_first {
+                s.lose_first = false;
+                return Reply::status(503);
+            }
+            if s.malformed_first {
+                s.malformed_first = false;
+                let mut reordered = results.clone();
+                reordered.reverse();
+                return Reply::json(envelope(json!(reordered)));
+            }
+            return Reply::json(envelope(json!(results)));
+        }
+        if r.path.contains("/records/comment") {
+            if r.method == "GET" {
+                s.calls.push(("GET".into(), 0));
+                let data = s.records.iter().map(|(k, id)| json!({"sourceKey":k,"targetDocumentId":id})).collect::<Vec<_>>();
+                let mut v = envelope(json!(data));
+                v["meta"]["pagination"] = json!({"pageCount":1});
+                return Reply::json(v);
+            }
+            s.calls.push(("single".into(), 1));
+            let b: Value = serde_json::from_slice(&r.body).unwrap();
+            return match upsert(&mut s, &run, &b) {
+                Ok(result) => Reply::json(envelope(result)),
+                Err(status) => Reply::status(status),
+            };
+        }
+        let total = s.records.len();
+        Reply::json(envelope(json!({"runId":run,"reconciliation":{"selected":total,"created":total,"updated":0,"reused":0,"failed":0,"missing":0,"conflicts":0,"mediaMissing":0}})))
+    })
+    .await
+}
+fn comment_fixture(origin: &Url, count: usize) -> (tempfile::TempDir, Cli) {
+    let (dir, mut cli) = fixture(origin, 1);
+    let o = origin.origin().ascii_serialization();
+    let metadata = json!({"schemaVersion":"v1","repositoryFixture":false,"sourceOwner":"Local QA","sourceAuthority":"synthetic.local","sourceLocation":"generated synthetic export","approvedAt":"2026-09-10T00:00:00Z"});
+    let ids = (1..=count).map(|i| format!("c{i}")).collect::<Vec<_>>();
+    let user = source_key("wordpress", "wp-user-1").unwrap();
+    let article = source_key("wordpress", "post-1").unwrap();
+    let mut export = metadata.clone();
+    export["records"] = json!(ids.iter().map(|id| json!({"sourceId":id,"sourceUrl":format!("{o}/comments/{id}"),"data":{"comment":format!("Synthetic comment {id}"),"commentedAt":"2020-01-01T00:00:00.000Z","user":{"sourceKey":user},"article":{"sourceKey":article}}})).collect::<Vec<_>>());
+    let bytes = serde_json::to_vec(&export).unwrap();
+    std::fs::write(dir.path().join("comments.json"), &bytes).unwrap();
+    let mut m = metadata;
+    m["sourceSystem"] = json!("wordpress");
+    m["sourceOrigins"] = json!([o]);
+    m["types"] = json!({"comment":ids});
+    m["files"] = json!({"comment":{"path":"comments.json","sha256":sha256(&bytes)}});
+    m["comments"] =
+        json!({"mode":"existing-users","approval":"SYNTHETIC-CMT","users":{user.clone():5}});
+    m["dependencies"] = json!({"article":[article]});
+    m["manifestHash"] = json!(manifest_hash(&m).unwrap());
+    std::fs::write(dir.path().join("manifest.json"), m.to_string()).unwrap();
+    cli.source_ids = ids;
+    cli.types = vec!["comment".into()];
+    (dir, cli)
+}
+fn writes(s: &Batch) -> Vec<(String, usize)> {
+    s.calls
+        .iter()
+        .filter(|(k, _)| k != "GET")
+        .cloned()
+        .collect()
+}
+#[tokio::test]
+async fn comments_are_written_in_batches_of_100_with_per_item_checkpoint_and_idempotent_resume() {
+    let state = Arc::new(Mutex::new(Batch::default()));
+    let cms = batch_cms(state.clone()).await;
+    let (_dir, mut cli) = comment_fixture(&cms.origin, 250);
+    let report = execute(&cli).await.unwrap();
+    assert!(report.passed());
+    assert_eq!((report.created, report.record_requests), (250, 3));
+    assert_eq!(
+        writes(&state.lock().unwrap()),
+        vec![
+            ("batch".into(), 100),
+            ("batch".into(), 100),
+            ("batch".into(), 50)
+        ]
+    );
+    let entries = checkpoint_entries(cli.checkpoint.as_ref().unwrap());
+    assert_eq!(entries.len(), 250);
+    assert!(entries.iter().all(|e| e["type"] == "comment"));
+    cli.resume = true;
+    let repeat = execute(&cli).await.unwrap();
+    assert!(repeat.passed());
+    assert_eq!(
+        (repeat.skipped, repeat.created, repeat.record_requests),
+        (250, 0, 3)
+    );
+    assert_eq!(state.lock().unwrap().records.len(), 250);
+    // --record-batch-size bounds the batch; 1 sends one request per record.
+    for (size, expected) in [(40, vec![40, 40, 20]), (1, vec![1; 5])] {
+        let state = Arc::new(Mutex::new(Batch::default()));
+        let cms = batch_cms(state.clone()).await;
+        let (_dir, mut cli) = comment_fixture(&cms.origin, if size == 1 { 5 } else { 100 });
+        cli.record_batch_size = Some(size);
+        assert!(execute(&cli).await.unwrap().passed());
+        let s = state.lock().unwrap();
+        assert_eq!(
+            writes(&s).iter().map(|(_, n)| *n).collect::<Vec<_>>(),
+            expected
+        );
+        let kind = if size == 1 { "single" } else { "batch" };
+        assert!(writes(&s).iter().all(|(k, _)| k == kind));
+    }
+    for bad in [0, 101] {
+        let state = Arc::new(Mutex::new(Batch::default()));
+        let cms = batch_cms(state.clone()).await;
+        let (_dir, mut cli) = comment_fixture(&cms.origin, 3);
+        cli.record_batch_size = Some(bad);
+        assert_eq!(
+            execute(&cli).await.err().unwrap().code,
+            "record_batch_size_invalid"
+        );
+        assert!(!cli.checkpoint.as_ref().unwrap().exists());
+        assert!(state.lock().unwrap().calls.is_empty());
+    }
+}
+#[tokio::test]
+async fn a_rejected_batch_item_fails_alone_with_its_status_and_resume_recovers_it() {
+    let state = Arc::new(Mutex::new(Batch {
+        reject: Some(("c7".into(), 409)),
+        ..Default::default()
+    }));
+    let cms = batch_cms(state.clone()).await;
+    let (_dir, mut cli) = comment_fixture(&cms.origin, 30);
+    let failed = execute(&cli).await.unwrap();
+    assert!(!failed.passed());
+    assert_eq!((failed.created, failed.failed), (29, 1));
+    assert_eq!(failed.failures[0].kind, "comment");
+    assert_eq!(failed.failures[0].code, "http_rejected");
+    assert_eq!(failed.failures[0].status, Some(409));
+    assert_eq!(failed.failures[0].record_fingerprint, sha256(b"c7"));
+    assert_eq!(
+        checkpoint_entries(cli.checkpoint.as_ref().unwrap()).len(),
+        29
+    );
+    cli.resume = true;
+    let recovered = execute(&cli).await.unwrap();
+    assert!(recovered.passed());
+    assert_eq!((recovered.created, recovered.skipped), (1, 29));
+}
+#[tokio::test]
+async fn a_lost_batch_response_is_reconciled_by_lookup_before_the_idempotent_retry() {
+    let state = Arc::new(Mutex::new(Batch {
+        lose_first: true,
+        ..Default::default()
+    }));
+    let cms = batch_cms(state.clone()).await;
+    let (_dir, cli) = comment_fixture(&cms.origin, 10);
+    let report = execute(&cli).await.unwrap();
+    assert!(report.passed());
+    // Committed before the lost response: the retry reports them as reused, never duplicated.
+    assert_eq!((report.skipped, report.created), (10, 0));
+    let s = state.lock().unwrap();
+    assert_eq!(s.records.len(), 10);
+    assert_eq!(
+        s.calls,
+        vec![
+            ("batch".into(), 10),
+            ("GET".into(), 0),
+            ("batch".into(), 10)
+        ]
+    );
+}
+#[tokio::test]
+async fn a_cms_without_the_batch_route_or_scope_gets_single_record_requests() {
+    for status in [404, 405, 403] {
+        let state = Arc::new(Mutex::new(Batch {
+            batch_status: Some(status),
+            ..Default::default()
+        }));
+        let cms = batch_cms(state.clone()).await;
+        let (_dir, cli) = comment_fixture(&cms.origin, 150);
+        let report = execute(&cli).await.unwrap();
+        assert!(report.passed(), "{status}");
+        assert_eq!(report.created, 150);
+        let s = state.lock().unwrap();
+        // One probe, then every record (including later chunks) goes through the single route.
+        assert_eq!(s.calls[0], ("batch".into(), 100));
+        assert_eq!(s.calls[1..].len(), 150);
+        assert!(s.calls[1..].iter().all(|(k, _)| k == "single"));
+        assert_eq!(report.record_requests, 151);
+        assert_eq!(
+            checkpoint_entries(cli.checkpoint.as_ref().unwrap()).len(),
+            150
+        );
+    }
+}
+#[tokio::test]
+async fn a_malformed_batch_response_fails_every_item_and_a_resume_reconciles() {
+    let state = Arc::new(Mutex::new(Batch {
+        malformed_first: true,
+        ..Default::default()
+    }));
+    let cms = batch_cms(state.clone()).await;
+    let (_dir, mut cli) = comment_fixture(&cms.origin, 5);
+    let failed = execute(&cli).await.unwrap();
+    assert_eq!(failed.failed, 5);
+    assert!(failed
+        .failures
+        .iter()
+        .all(|f| f.code == "cms_batch_mismatch"));
+    assert!(checkpoint_entries(cli.checkpoint.as_ref().unwrap()).is_empty());
+    cli.resume = true;
+    let recovered = execute(&cli).await.unwrap();
+    assert!(recovered.passed());
+    assert_eq!(recovered.skipped, 5);
 }

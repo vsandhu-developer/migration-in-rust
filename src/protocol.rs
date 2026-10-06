@@ -153,28 +153,59 @@ impl Cms {
                 )
                 .await
             {
-                Ok(v) => {
-                    let data = v["data"].clone();
-                    require(
-                        data["sourceKey"] == body["source"]["sourceKey"]
-                            && data["type"] == typ
-                            && data["runId"] == run
-                            && data["targetDocumentId"]
-                                .as_str()
-                                .is_some_and(|s| !s.is_empty())
-                            && matches!(
-                                data["operation"].as_str(),
-                                Some("created" | "updated" | "reused")
-                            ),
-                        "cms_record_mismatch",
-                    )?;
-                    return Ok(data);
+                Ok(v) => return checked_record(run, typ, body, &v["data"]),
+                Err(e) if attempt + 1 < self.http.attempts && retryable(&e) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(
+                        e.retry_delay_ms.unwrap_or(200 * (1 << attempt)),
+                    ))
+                    .await;
                 }
-                Err(e)
-                    if attempt + 1 < self.http.attempts
-                        && (e.status.is_some_and(|s| s == 429 || s >= 500)
-                            || matches!(e.code, "transport_failed" | "response_interrupted")) =>
-                {
+                Err(e) => return Err(e),
+            }
+        }
+        Err(Error::new("retry_exhausted"))
+    }
+    /// Upserts 1..=MAX_RECORD_BATCH records of one type in one request. The CMS runs each item
+    /// through the single-record upsert and answers per item, index-aligned. Same retry rules as
+    /// `record`: an uncertain response is reconciled by a source-key lookup of the type before the
+    /// idempotent retry (items that were committed come back as `reused`). A 403/404/405 means the
+    /// route or its token scope is not available: `record_batch_unsupported`, callers fall back to
+    /// `record` for every item (nothing was written: the route policy runs before any item).
+    pub async fn record_batch(
+        &self,
+        run: &str,
+        typ: &str,
+        bodies: &[Value],
+    ) -> Result<Vec<Result<Value>>> {
+        validate_run(run)?;
+        require(crate::manifest::TYPES.contains(&typ), "cms_type_invalid")?;
+        require(
+            !bodies.is_empty() && bodies.len() <= MAX_RECORD_BATCH,
+            "record_batch_invalid",
+        )?;
+        let payload = json!({ "data": bodies });
+        let mut client = self.clone();
+        client.http.attempts = 1;
+        for attempt in 0..self.http.attempts {
+            if attempt > 0 {
+                client.lookup_all(run, typ).await?;
+            }
+            match client
+                .request(
+                    Method::POST,
+                    &format!("/api/ds-migration/runs/{run}/records/{typ}/batch"),
+                    Some(&payload),
+                )
+                .await
+            {
+                Ok(v) => return checked_batch(run, typ, bodies, &v["data"]),
+                Err(e) if e.status.is_some_and(|s| (403..=405).contains(&s)) => {
+                    return Err(Error {
+                        code: "record_batch_unsupported",
+                        ..e
+                    })
+                }
+                Err(e) if attempt + 1 < self.http.attempts && retryable(&e) => {
                     tokio::time::sleep(std::time::Duration::from_millis(
                         e.retry_delay_ms.unwrap_or(200 * (1 << attempt)),
                     ))
@@ -289,6 +320,63 @@ impl Cms {
             .await?["data"]
             .clone())
     }
+}
+/// Records per batch request (CMS `RECORD_BATCH_LIMIT`).
+pub const MAX_RECORD_BATCH: usize = 100;
+/// Serialized-body budget per batch request; the CMS JSON body limit is 1 MiB.
+pub const RECORD_BATCH_BYTES: usize = 512 * 1024;
+fn retryable(e: &Error) -> bool {
+    e.status.is_some_and(|s| s == 429 || s >= 500)
+        || matches!(e.code, "transport_failed" | "response_interrupted")
+}
+fn checked_record(run: &str, typ: &str, body: &Value, data: &Value) -> Result<Value> {
+    require(
+        data["sourceKey"] == body["source"]["sourceKey"]
+            && data["type"] == typ
+            && data["runId"] == run
+            && data["targetDocumentId"]
+                .as_str()
+                .is_some_and(|s| !s.is_empty())
+            && matches!(
+                data["operation"].as_str(),
+                Some("created" | "updated" | "reused")
+            ),
+        "cms_record_mismatch",
+    )?;
+    Ok(data.clone())
+}
+/// Per-item outcome of a batch response. A malformed, reordered or incomplete response fails the
+/// whole batch (`cms_batch_mismatch`); a per-item rejection becomes the same `http_rejected` error
+/// (with the item's 4xx status) that the single-record request would have produced.
+fn checked_batch(
+    run: &str,
+    typ: &str,
+    bodies: &[Value],
+    data: &Value,
+) -> Result<Vec<Result<Value>>> {
+    let items = data
+        .as_array()
+        .filter(|items| items.len() == bodies.len())
+        .ok_or_else(|| Error::new("cms_batch_mismatch"))?;
+    let mut results = Vec::with_capacity(items.len());
+    for (i, (item, body)) in items.iter().zip(bodies).enumerate() {
+        require(
+            item["index"].as_u64() == Some(i as u64)
+                && item.as_object().is_some_and(|o| o.len() == 2),
+            "cms_batch_mismatch",
+        )?;
+        if let Some(result) = item.get("result") {
+            results.push(Ok(checked_record(run, typ, body, result)
+                .map_err(|_| Error::new("cms_batch_mismatch"))?));
+        } else {
+            let status = item["error"]["status"]
+                .as_u64()
+                .filter(|s| (400..500).contains(s))
+                .ok_or_else(|| Error::new("cms_batch_mismatch"))?;
+            results.push(Err(Error::http(status as u16)));
+        }
+    }
+    Ok(results)
 }
 pub fn validate_run(run: &str) -> Result<()> {
     require(

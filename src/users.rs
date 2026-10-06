@@ -376,7 +376,7 @@ pub async fn execute(cli: &Cli) -> Result<UserReport> {
         "manifest_arguments_forbidden",
     )?;
     require(
-        !cli.skip_images && cli.media_concurrency.is_none(),
+        !cli.skip_images && cli.media_concurrency.is_none() && cli.record_batch_size.is_none(),
         "media_arguments_not_applicable",
     )?;
     require(!(cli.dry_run && cli.resume), "resume_phase_invalid")?;

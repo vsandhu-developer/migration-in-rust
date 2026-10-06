@@ -152,6 +152,7 @@ fn fixture(dir: &Path, origin: &Url, phase: Phase, users: &Value) -> Cli {
         users_file: Some(dir.join("users.json")),
         batch_size: None,
         media_concurrency: None,
+        record_batch_size: None,
     }
 }
 

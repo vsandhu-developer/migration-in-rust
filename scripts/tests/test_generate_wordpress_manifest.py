@@ -171,14 +171,26 @@ class CommentsForExistingArticles(Base):
         summary = json.loads((self.out / "SUMMARY.json").read_text())
         self.assertEqual(summary["postsWithoutComments"], [102])
 
-    def test_gated_article_comments_are_kept(self):
+    def test_gated_article_is_migrated_with_public_media_and_comments_are_kept(self):
         gated = write_gated_taxonomy(self.tmp, REPO / "data/source/categories/DS-categories.json")
-        # The article path skips the gated post (no approved public cover) ...
+        # The article path migrates the gated post: it keeps its gated subCategory, its featured
+        # image becomes the public cover and every media record is public.
         self.generate("--count", "3", "--batch-size", "3", "--categories", str(gated))
         summary = json.loads((self.out / "SUMMARY.json").read_text())
-        self.assertIn({"postId": 104, "reasons": ["gated_article_requires_public_cover_decision"]}, summary["skipped"])
-        self.assertIn("gated-cat/gated-sub", self.manifest("foundation")["types"]["subCategory"])
-        # ... but the comments path for an existing gated article keeps its comments.
+        self.assertEqual(summary["acceptedPosts"], 3)
+        self.assertNotIn(104, [s["postId"] for s in summary["skipped"]])
+        self.assertEqual(summary["articlesByAccessLevel"]["gated"], 1)
+        self.assertEqual(summary["media"]["classificationPerManifest"]["explicit"], 0)
+        m = self.manifest("articles-01")
+        self.assertIn("104", m["types"]["article"])
+        self.assertEqual({d["accessLevel"] for d in m["media"].values()}, {"public"})
+        rec = next(r for r in self.export("articles-01", "article") if r["sourceId"] == "104")
+        self.assertEqual(rec["data"]["subCategory"], {"sourceKey": key("gated-cat/gated-sub")})
+        self.assertEqual(rec["data"]["coverImage"]["publicImage"], {"sourceKey": key("wp-attachment-503")})
+        self.assertNotIn("explicitImage", rec["data"]["coverImage"])
+        self.assertIn("104", m["media"]["wp-attachment-503"]["requiredFor"]["article"])
+        self.assertEqual(self.manifest("foundation")["taxonomy"]["subCategory"]["gated-cat/gated-sub"]["accessLevel"], "gated")
+        # The comments path for an existing gated article keeps its comments.
         self.out = self.tmp / "out-comments"
         FakeClient.calls.clear()
         self.generate("--post-ids", "104", "--categories", str(gated), "--comments-approval", "CMT-3",

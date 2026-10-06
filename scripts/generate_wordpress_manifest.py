@@ -7,7 +7,8 @@ Outputs (under a NEW --out-dir outside this repository):
                      --foundation-scope all (default, old Pre/Authors parity): every record of the
                      source files; referenced: only records the selected posts use
   articles-NN/       manifest.json + article.json + media.json (+ comment.json), --batch-size newest posts each
-  SUMMARY.json       counts, media classification/bytes, skipped posts with reasons
+  SUMMARY.json       counts (articles by public/gated subCategory), media classification (always
+                     public)/bytes, skipped posts with reasons
 
 Comments-for-existing-articles mode (--post-ids / --post-ids-file, no --count):
   comments-NN/       comments-only manifest.json + comment.json + comment-source-ids.txt for posts
@@ -45,6 +46,8 @@ DEFAULT_API = "https://daily.squirt.org/wp-json/wp/v2/"
 SOURCE_SYSTEM = "wordpress"
 ALLOWED_MIME = ("image/png", "image/jpeg", "image/webp", "image/avif")
 MAX_MEDIA_BYTES = 20 * 1024 * 1024
+# Migration decision: all article images (covers and inline, public and gated articles) are public.
+MEDIA_ACCESS_LEVEL = "public"
 SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 USER_AGENT = "PTP-DailySquirt-migration-manifest/1.0 (+public REST read; contact: platform team)"
 MIN_INTERVAL = 0.5  # seconds between WordPress REST requests (<= 2 req/s, sequential)
@@ -675,8 +678,7 @@ def parse_post_ids(a, ap):
 
 def comments_for_existing(a, ap, client, api, site_origin, out, meta):
     """Comments-only manifests for articles that ALREADY exist on the target (imported earlier with
-    any access level: posts are never fetched or filtered here, so gated/explicit articles keep their
-    comments even though the article-import path skips gated subCategories;
+    any access level: posts are never fetched or filtered here, so gated articles keep their comments;
     sourceKey ["wordpress","<postId>"]). Each comments-NN/ manifest has types.comment + files.comment,
     comments:{mode:"existing-users",approval,users}, dependencies.article for the referenced posts (the
     CMS and importer resolve the relation through dependencies; the article is not in types) and
@@ -854,10 +856,9 @@ def main(argv=None):
                 reasons.append("no_featured_image")
             elif not index.attachments.get(post["featured_media"]):
                 reasons.append("featured_image_missing")
-            gated = primary is not None and subs[wp_map[primary]]["accessLevel"] == "gated"
-            if gated:
-                # The CMS cover contract requires a public cover; no approved public variant exists.
-                reasons.append("gated_article_requires_public_cover_decision")
+            # Gated (reader-only) subCategories are migrated like public ones: the article keeps its
+            # gated subCategory, and its WordPress featured image becomes the public cover
+            # (coverImage.publicImage). Decision: every migrated image is public.
             body = stable_wordpress_html(post["content"]["rendered"])
             parser = Sources()
             parser.feed(body)
@@ -945,13 +946,11 @@ def main(argv=None):
         seen_alias = {}
         for x in batch:
             p, sid = x["post"], str(x["post"]["id"])
-            level = "explicit" if subs[wp_map[x["primary"]]]["accessLevel"] == "gated" else "public"
             for mid in x["media"]:
-                d = media_defs.setdefault(mid, {"sourceKey": source_key(mid), "checksum": index.media[mid]["checksum"], "accessLevel": level,
+                # MEDIA_ACCESS_LEVEL for every image, whatever the article's subCategory access level.
+                d = media_defs.setdefault(mid, {"sourceKey": source_key(mid), "checksum": index.media[mid]["checksum"], "accessLevel": MEDIA_ACCESS_LEVEL,
                                                 "mimeType": index.media[mid]["mimeType"], "size": index.media[mid]["size"], "transformVersion": "v1",
                                                 "requiredFor": {"article": []}})
-                if level == "explicit":
-                    d["accessLevel"] = "explicit"
                 if sid not in d["requiredFor"]["article"]:
                     d["requiredFor"]["article"].append(sid)
             frames += [f for f in x["frames"] if f not in frames]
@@ -1043,7 +1042,9 @@ def main(argv=None):
                                        "categories": len(categories), "subCategories": len(subs)}},
         "articles": manifests,
         "counts": dict({t: len(v) for t, v in foundation["types"].items()}, article=len(accepted)),
+        "articlesByAccessLevel": {lvl: sum(1 for x in accepted if subs[wp_map[x["primary"]]]["accessLevel"] == lvl) for lvl in ("public", "gated")},
         "media": {"unique": len(all_media), "bytes": sum(all_media.values()), "classificationPerManifest": classification,
+                  "accessPolicy": "all migrated images are public (gated articles keep their gated subCategory)",
                   "aliasConflictsDropped": alias_conflicts},
         "coverAltTextFromTitle": sum(1 for x in accepted if not (index.attachments[x["post"]["featured_media"]].get("alt_text") or "").strip()),
         "perPost": {"images": round(len(all_media) / n_acc, 2), "megabytes": round(sum(all_media.values()) / n_acc / 1e6, 3),
@@ -1061,11 +1062,12 @@ def main(argv=None):
         "notes": [
             "Register each manifest.json object verbatim in daily-squirt-migration.approvedManifests before running.",
             "Run foundation first as the ordered per-type chunks of foundation/selection.json (<= 1,000 IDs each), then articles-NN with --types article --source-ids from source-ids.txt, then --types comment with <= 1,000 ids of comment-source-ids.txt per run.",
+            "Every media record is accessLevel public, including covers/inline images of gated-subCategory articles (whose content still requires login).",
             "Article title/excerpt/body/slug/publishDate are refreshed from WordPress at import and checked against wordpress.checksum/modifiedGmt.",
         ],
     }
     (out / "SUMMARY.json").write_text(json.dumps(summary, indent=1, ensure_ascii=False))
-    print(json.dumps({k: summary[k] for k in ("acceptedPosts", "skippedPosts", "counts", "media", "perPost", "videoOrigins", "comments", "slugs", "skipReasonCounts")}, indent=1))
+    print(json.dumps({k: summary[k] for k in ("acceptedPosts", "skippedPosts", "counts", "articlesByAccessLevel", "media", "perPost", "videoOrigins", "comments", "slugs", "skipReasonCounts")}, indent=1))
 
 
 if __name__ == "__main__":

@@ -42,7 +42,7 @@ POSTS = [
     post(101, 44, 7, 501, inline=502, tags=(6881, 3583)),
     # 3748 -> porn-and-play/erotic-stories
     post(102, 3748, 8, 503),
-    # 9999 -> gated-cat/gated-sub (only in the gated test taxonomy); skipped by the article path
+    # 9999 -> gated-cat/gated-sub (only in the gated test taxonomy); migrated with a public cover
     post(104, 9999, 7, 503),
 ]
 COMMENTS = {

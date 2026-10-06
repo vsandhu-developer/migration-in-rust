@@ -5,7 +5,7 @@ use crate::{
     error::{require, Error, Result},
     http::{Boundary, Http},
     manifest::{Config, Manifest, Record},
-    protocol::{record_body, Cms},
+    protocol::{record_body, Cms, MAX_RECORD_BATCH, RECORD_BATCH_BYTES},
     source::{apply_wordpress, fetch_media, rewrite_html_with_frames, Wordpress},
 };
 use futures::{stream, StreamExt};
@@ -18,6 +18,7 @@ use std::{
 
 pub const DEFAULT_MEDIA_CONCURRENCY: usize = 2;
 pub const MAX_MEDIA_CONCURRENCY: usize = 8;
+pub const DEFAULT_RECORD_BATCH: usize = MAX_RECORD_BATCH;
 
 #[derive(Default, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -32,6 +33,8 @@ pub struct Report {
     pub media_created: usize,
     pub media_reused: usize,
     pub media_failed: usize,
+    /// Record write requests sent (single-record POSTs plus batch POSTs, excluding retries).
+    pub record_requests: usize,
     pub dry_run: bool,
     pub failures: Vec<Failure>,
     pub run_id: Option<String>,
@@ -60,6 +63,86 @@ impl Report {
 pub fn media_concurrency(cli: &Cli) -> usize {
     cli.media_concurrency.unwrap_or(DEFAULT_MEDIA_CONCURRENCY)
 }
+pub fn record_batch_size(cli: &Cli) -> usize {
+    cli.record_batch_size.unwrap_or(DEFAULT_RECORD_BATCH)
+}
+/// Articles stay one per request: large HTML bodies and per-article media verification would
+/// make a 100-article request slow and close to the CMS 1 MiB JSON body limit.
+fn batchable_type(typ: &str) -> bool {
+    typ != "article"
+}
+type PendingRecord = (String, String, Value);
+fn apply_record(
+    report: &mut Report,
+    cp: &mut Checkpoint,
+    typ: &str,
+    id: &str,
+    result: Result<Value>,
+) -> Result<()> {
+    match result {
+        Ok(row) => {
+            match row["operation"].as_str() {
+                Some("created") => report.created += 1,
+                Some("updated") => report.updated += 1,
+                _ => report.skipped += 1,
+            }
+            cp.record(&row)
+        }
+        Err(e) => {
+            report.failed += 1;
+            report.failure(typ, id, &e);
+            Ok(())
+        }
+    }
+}
+/// Writes the pending same-type records: one batch request when batching is available, otherwise
+/// (or for a single record, or after the CMS reported the batch route/scope unavailable) one
+/// request per record. Every item is journaled in the checkpoint individually, in order.
+async fn flush_records(
+    cms: &Cms,
+    run: &str,
+    pending: &mut Vec<PendingRecord>,
+    batching: &mut bool,
+    report: &mut Report,
+    cp: &mut Checkpoint,
+) -> Result<()> {
+    if pending.is_empty() {
+        return Ok(());
+    }
+    let items = std::mem::take(pending);
+    let typ = items[0].0.clone();
+    let mut results = None;
+    if *batching && items.len() > 1 {
+        let bodies = items.iter().map(|i| i.2.clone()).collect::<Vec<_>>();
+        report.record_requests += 1;
+        match cms.record_batch(run, &typ, &bodies).await {
+            Ok(r) => results = Some(r),
+            Err(e) if e.code == "record_batch_unsupported" => {
+                eprintln!(
+                    "{}",
+                    json!({"notice":"record_batch_unsupported","status":e.status,"fallback":"single-record requests"})
+                );
+                *batching = false;
+            }
+            Err(e) => results = Some(items.iter().map(|_| Err(e.clone())).collect()),
+        }
+    }
+    let results = match results {
+        Some(r) => r,
+        None => {
+            let mut r = Vec::with_capacity(items.len());
+            for (t, _, body) in &items {
+                report.record_requests += 1;
+                r.push(cms.record(run, t, body).await);
+            }
+            r
+        }
+    };
+    for ((t, id, _), result) in items.iter().zip(results) {
+        apply_record(report, cp, t, id, result)?;
+    }
+    Ok(())
+}
 type PreparedInput = (Config, Manifest, Vec<(String, Record)>);
 pub fn preflight(cli: &Cli) -> Result<PreparedInput> {
     require(
@@ -87,6 +170,10 @@ pub fn preflight(cli: &Cli) -> Result<PreparedInput> {
     require(
         (1..=MAX_MEDIA_CONCURRENCY).contains(&media_concurrency(cli)),
         "media_concurrency_invalid",
+    )?;
+    require(
+        (1..=MAX_RECORD_BATCH).contains(&record_batch_size(cli)),
+        "record_batch_size_invalid",
     )?;
     require(
         !cli.skip_images || (cli.phase == Phase::Inventory || cli.dry_run),
@@ -526,34 +613,68 @@ pub async fn execute(cli: &Cli) -> Result<Report> {
                 }
             }
         }
+        // Records keep their selection order. Consecutive same-type non-article records are sent
+        // in batches of <= --record-batch-size and <= RECORD_BATCH_BYTES of JSON.
+        let batch_size = record_batch_size(cli);
+        let mut batching = batch_size > 1;
+        let mut pending: Vec<PendingRecord> = Vec::new();
+        let mut pending_bytes = 0;
         for (typ, mut record) in selected {
-            let result: Result<Value> = async {
+            let body: Result<Value> = (|| {
                 for field in html_fields(&typ) {
                     if let Some(html) = record.data[field].as_str() {
                         record.data[field] =
                             json!(rewrite_html_with_frames(html, &aliases, &frames)?);
                     }
                 }
-                let body = record_body(&typ, &record, &manifest)?;
-                // Resume never trusts a local mapping alone; native upsert verifies current storage.
-                cms.record(&run, &typ, &body).await
-            }
-            .await;
-            match result {
-                Ok(row) => {
-                    match row["operation"].as_str() {
-                        Some("created") => report.created += 1,
-                        Some("updated") => report.updated += 1,
-                        _ => report.skipped += 1,
-                    }
-                    cp.record(&row)?;
-                }
+                record_body(&typ, &record, &manifest)
+            })();
+            let body = match body {
+                Ok(body) => body,
                 Err(e) => {
                     report.failed += 1;
                     report.failure(&typ, &record.source_id, &e);
+                    continue;
                 }
+            };
+            let size = serde_json::to_vec(&body).map_or(usize::MAX, |b| b.len());
+            let batchable = batching && batchable_type(&typ) && size < RECORD_BATCH_BYTES;
+            if !pending.is_empty()
+                && (!batchable
+                    || pending[0].0 != typ
+                    || pending.len() >= batch_size
+                    || pending_bytes + size > RECORD_BATCH_BYTES)
+            {
+                flush_records(
+                    &cms,
+                    &run,
+                    &mut pending,
+                    &mut batching,
+                    &mut report,
+                    &mut cp,
+                )
+                .await?;
+                pending_bytes = 0;
+            }
+            // Resume never trusts a local mapping alone; native upsert verifies current storage.
+            if batchable && batching {
+                pending_bytes += size;
+                pending.push((typ, record.source_id, body));
+            } else {
+                pending.push((typ, record.source_id, body));
+                let mut single = false;
+                flush_records(&cms, &run, &mut pending, &mut single, &mut report, &mut cp).await?;
             }
         }
+        flush_records(
+            &cms,
+            &run,
+            &mut pending,
+            &mut batching,
+            &mut report,
+            &mut cp,
+        )
+        .await?;
         cp.flush()?;
     }
     if !report.passed() {
