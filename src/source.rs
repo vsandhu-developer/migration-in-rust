@@ -96,15 +96,24 @@ impl Wordpress {
                     .and_then(|v| v.to_str().ok())
                     .and_then(|s| s.parse::<usize>().ok())
                     .ok_or_else(|| Error::new("wordpress_pagination_missing"))?;
+                let rows = json_response(response)?;
+                let rows = rows
+                    .as_array()
+                    .ok_or_else(|| Error::new("wordpress_posts_invalid"))?;
+                if pages == 0 {
+                    require(
+                        expected_pages.is_none() && rows.is_empty(),
+                        "wordpress_pagination_changed",
+                    )?;
+                    // An empty cached include response is resolved by the same
+                    // exact-ID fallback as a partially cached listing.
+                    break;
+                }
                 require(
                     pages > 0 && pages <= 1000 && expected_pages.is_none_or(|p| p == pages),
                     "wordpress_pagination_changed",
                 )?;
                 expected_pages = Some(pages);
-                let rows = json_response(response)?;
-                let rows = rows
-                    .as_array()
-                    .ok_or_else(|| Error::new("wordpress_posts_invalid"))?;
                 require(
                     !rows.is_empty() && rows.len() <= self.page_size,
                     "wordpress_pagination_invalid",

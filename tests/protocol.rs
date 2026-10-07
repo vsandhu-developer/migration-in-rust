@@ -331,6 +331,28 @@ async fn wordpress_partial_listing_recovers_only_exact_missing_posts() {
 }
 
 #[tokio::test]
+async fn wordpress_empty_cached_listing_recovers_exact_published_post() {
+    let source = server(move |r| {
+        if r.path.contains("posts/9") {
+            Reply::json(json!({"id":9,"status":"publish"}))
+        } else {
+            let mut reply = Reply::json(json!([]));
+            reply.headers.push(("X-WP-TotalPages".into(), "0".into()));
+            reply
+        }
+    })
+    .await;
+    let wp = Wordpress {
+        http: http(&source.origin, 1),
+        endpoint: source.origin.join("wp-json/wp/v2/").unwrap(),
+        authorization: None,
+        page_size: 100,
+        allow_private: false,
+    };
+    assert_eq!(wp.posts(&["9".into()], "publish").await.unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn wordpress_missing_post_recovery_rejects_wrong_identity_or_status() {
     for row in [
         json!({"id":10,"status":"publish"}),
