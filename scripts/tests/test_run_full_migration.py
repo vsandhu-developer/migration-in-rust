@@ -126,6 +126,15 @@ class Orchestrator(unittest.TestCase):
         self.assertIn("--comments-approval CMT", gen_line)
         self.assertNotIn("t" * 32, r.stdout + r.stderr)
 
+    def test_current_full_archive_inventory_is_not_capped_at_19000(self):
+        r = self.run_orch("--dry-run", "--count", "19060")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("--count 19060", r.stdout)
+        self.assertFalse(self.state.exists())
+        self.assertFalse(self.log.exists())
+        too_large = self.run_orch("--dry-run", "--count", "20001")
+        self.assertNotEqual(too_large.returncode, 0)
+
     def test_full_flow_stops_at_gate_then_continues_and_is_idempotent(self):
         r = self.run_orch()
         self.assertEqual(r.returncode, 0, r.stderr)

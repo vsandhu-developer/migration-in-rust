@@ -149,8 +149,8 @@ def resolve_settings(args, state):
         raise Stop("missing required settings: " + ", ".join("--" + m.replace("_", "-") for m in missing))
     if not LABEL_RE.match(settings["run_prefix"]):
         raise Stop("--run-prefix must be 1..40 characters of A-Z a-z 0-9 _ -")
-    if not (1 <= settings["count"] <= 19000 and 1 <= settings["batch_size"] <= MAX_RUN_IDS):
-        raise Stop("--count 1..19000 and --batch-size 1..1000")
+    if not (1 <= settings["count"] <= 20000 and 1 <= settings["batch_size"] <= MAX_RUN_IDS):
+        raise Stop("--count 1..20000 and --batch-size 1..1000")
     if settings["fallback_user_id"] < 0:
         raise Stop("--fallback-user-id must be a positive native user id")
     return settings

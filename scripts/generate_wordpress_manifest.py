@@ -776,8 +776,8 @@ def main(argv=None):
             ap.error("batch-size 1..1000")
     elif a.count is None or a.batch_size is None:
         ap.error("--count and --batch-size are required (or use --post-ids/--post-ids-file)")
-    elif not (1 <= a.count <= 19000 and 1 <= a.batch_size <= 1000):
-        ap.error("count 1..19000, batch-size 1..1000")
+    elif not (1 <= a.count <= 20000 and 1 <= a.batch_size <= 1000):
+        ap.error("count 1..20000, batch-size 1..1000")
     if (a.user_mapping or a.fallback_user_id) and not a.comments_approval:
         ap.error("--comments-approval is required when comment authors are mapped")
     for label in ("comments_approval", "publication_approval"):
