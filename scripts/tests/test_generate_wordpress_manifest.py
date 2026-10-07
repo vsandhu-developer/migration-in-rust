@@ -33,6 +33,20 @@ class ReaderMappings(unittest.TestCase):
             self.assertEqual(gen.load_user_map([path]), {7: 42})
 
 
+class ArchivePages(unittest.TestCase):
+    def test_batch_can_start_at_a_later_page_without_reselecting_first_page(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inputs = write_inputs(root)
+            FakeClient.calls = []
+            run_generator(["--out-dir", str(root / "out"), "--cache-dir", str(root / "cache"),
+                           "--authors", str(inputs / "authors.json"), "--count", "1", "--batch-size", "1",
+                           "--max-scan", "1", "--start-page", "7"], gen)
+            posts = [u for u in FakeClient.calls if "/posts?" in u]
+            self.assertEqual(len(posts), 1)
+            self.assertIn("page=7", posts[0])
+
+
 class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="ds-gen-test-"))

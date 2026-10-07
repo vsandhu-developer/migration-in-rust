@@ -756,6 +756,7 @@ def main(argv=None):
     ap.add_argument("--post-ids-file", type=Path, default=None, help="as --post-ids, IDs separated by commas/whitespace")
     ap.add_argument("--source-owner", default="Pink Triangle Press - Daily Squirt editorial")
     ap.add_argument("--max-scan", type=int, default=0, help="max candidate posts to scan (default count*3+100)")
+    ap.add_argument("--start-page", type=int, default=1, help="first WordPress listing page (for independent resumable archive batches)")
     ap.add_argument("--refresh-listing", action="store_true", help="re-fetch cached post listing pages")
     ap.add_argument("--user-mapping", type=Path, action="append", default=[],
                     help="users-state.json from the users phase, then admin-users (old lookup order); repeatable")
@@ -812,7 +813,9 @@ def main(argv=None):
 
     accepted, skipped, scanned = [], [], 0
     max_scan = a.max_scan or a.count * 3 + 100
-    page, total_pages = 1, None
+    if a.start_page < 1:
+        ap.error("--start-page must be positive")
+    page, total_pages = a.start_page, None
     while len(accepted) < a.count and scanned < max_scan and (total_pages is None or page <= total_pages):
         url = api + "posts?" + urllib.parse.urlencode({"status": "publish", "orderby": "date", "order": "desc", "per_page": 100, "page": page})
         headers, posts = client.json(url, listing=True)
