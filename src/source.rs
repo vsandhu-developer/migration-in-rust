@@ -127,6 +127,39 @@ impl Wordpress {
                 page += 1;
             }
         }
+        // Cached include listings can omit recently published posts. Resolve only
+        // the exact missing IDs through their canonical endpoints; identity/status
+        // and the caller's snapshot checks remain mandatory.
+        for id in ids
+            .iter()
+            .filter(|id| !out.contains_key(*id))
+            .cloned()
+            .collect::<Vec<_>>()
+        {
+            let mut url = self
+                .endpoint
+                .join(&format!("posts/{id}"))
+                .map_err(|_| Error::new("wordpress_url_invalid"))?;
+            if self.authorization.is_some() {
+                url.query_pairs_mut().append_pair("context", "edit");
+            }
+            let response = self
+                .http
+                .send(
+                    Method::GET,
+                    url,
+                    self.authorization.as_deref(),
+                    Body::Empty,
+                    8 * 1024 * 1024,
+                )
+                .await?;
+            let row = json_response(response)?;
+            require(
+                row["id"].as_u64().is_some_and(|n| n.to_string() == id) && row["status"] == status,
+                "wordpress_selection_changed",
+            )?;
+            out.insert(id, row);
+        }
         require(out.len() == ids.len(), "wordpress_selection_incomplete")?;
         Ok(out)
     }

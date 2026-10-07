@@ -299,6 +299,71 @@ async fn wordpress_exact_ids_authentication_pages_dates_and_all_comment_pages() 
     );
 }
 #[tokio::test]
+async fn wordpress_partial_listing_recovers_only_exact_missing_posts() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let c = calls.clone();
+    let source = server(move |r| {
+        c.lock().unwrap().push(r.path.clone());
+        if r.path.contains("posts/9") {
+            Reply::json(json!({"id":9,"status":"publish"}))
+        } else {
+            let mut reply = Reply::json(json!([{"id":3,"status":"publish"}]));
+            reply.headers.push(("X-WP-TotalPages".into(), "1".into()));
+            reply
+        }
+    })
+    .await;
+    let wp = Wordpress {
+        http: http(&source.origin, 1),
+        endpoint: source.origin.join("wp-json/wp/v2/").unwrap(),
+        authorization: None,
+        page_size: 100,
+        allow_private: false,
+    };
+    let posts = wp
+        .posts(&["3".into(), "9".into()], "publish")
+        .await
+        .unwrap();
+    assert_eq!(posts.len(), 2);
+    let calls = calls.lock().unwrap();
+    assert_eq!(calls.len(), 2);
+    assert!(calls[1].ends_with("/posts/9"));
+}
+
+#[tokio::test]
+async fn wordpress_missing_post_recovery_rejects_wrong_identity_or_status() {
+    for row in [
+        json!({"id":10,"status":"publish"}),
+        json!({"id":9,"status":"private"}),
+    ] {
+        let source = server(move |r| {
+            if r.path.contains("posts/9") {
+                Reply::json(row.clone())
+            } else {
+                let mut reply = Reply::json(json!([{"id":3,"status":"publish"}]));
+                reply.headers.push(("X-WP-TotalPages".into(), "1".into()));
+                reply
+            }
+        })
+        .await;
+        let wp = Wordpress {
+            http: http(&source.origin, 1),
+            endpoint: source.origin.join("wp-json/wp/v2/").unwrap(),
+            authorization: None,
+            page_size: 100,
+            allow_private: false,
+        };
+        assert_eq!(
+            wp.posts(&["3".into(), "9".into()], "publish")
+                .await
+                .unwrap_err()
+                .code,
+            "wordpress_selection_changed"
+        );
+    }
+}
+
+#[tokio::test]
 async fn uncertain_success_is_looked_up_before_idempotent_retry() {
     let calls = Arc::new(Mutex::new(Vec::new()));
     let c = calls.clone();
