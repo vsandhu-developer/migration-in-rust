@@ -120,9 +120,8 @@ class Orchestrator(unittest.TestCase):
         self.assertIn("--phase users", r.stdout)
         gen_line = next(line for line in r.stdout.splitlines() if str(self.generator) in line)
         users = gen_line.index("checkpoints/users/users-state.json")
-        admins = gen_line.index("checkpoints/admin-users/users-state.json")
-        self.assertLess(users, admins)
-        self.assertIn("--fallback-user-id 3", gen_line)
+        self.assertNotIn("checkpoints/admin-users/users-state.json", gen_line)
+        self.assertNotIn("--fallback-user-id", gen_line)
         self.assertIn("--comments-approval CMT", gen_line)
         self.assertNotIn("t" * 32, r.stdout + r.stderr)
 
@@ -144,8 +143,8 @@ class Orchestrator(unittest.TestCase):
         self.assertEqual(first, ["admin-users:ds-full-admin-users", "users:ds-full-users", "generate"])
         gen = self.calls()[2]
         maps = [gen[i + 1] for i, a in enumerate(gen) if a == "--user-mapping"]
-        self.assertEqual([Path(m).parent.name for m in maps], ["users", "admin-users"])
-        self.assertEqual(gen[gen.index("--fallback-user-id") + 1], "3")
+        self.assertEqual([Path(m).parent.name for m in maps], ["users"])
+        self.assertNotIn("--fallback-user-id", gen)
         state = json.loads((self.state / "orchestrator-state.json").read_text())
         self.assertEqual({k: v["status"] for k, v in state["stages"].items()},
                          {"admin-users": "completed", "users": "completed", "generate": "completed"})
@@ -216,6 +215,18 @@ class Orchestrator(unittest.TestCase):
         self.assertNotIn("--fallback-user-id", r.stdout)
         r = self.run_orch("--dry-run", "--fallback-user-id", "42")
         self.assertIn("--fallback-user-id 42", r.stdout)
+
+    def test_explicit_reader_maps_replace_admin_namespace_and_are_pinned(self):
+        readers = self.tmp / "editor-readers.json"
+        readers.write_text(json.dumps({"mapping": {"9": 99}}))
+        r = self.run_orch("--comment-user-mapping", str(readers))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        gen = next(c for c in self.calls() if c[0] == "GENERATOR")
+        maps = [gen[i + 1] for i, a in enumerate(gen) if a == "--user-mapping"]
+        self.assertEqual(maps, [str(readers.resolve())])
+        changed = self.run_orch("--comment-user-mapping", str(self.tmp / "other.json"))
+        self.assertNotEqual(changed.returncode, 0)
+        self.assertIn("differs", changed.stderr)
 
     def test_state_dir_inside_repository_is_rejected(self):
         r = subprocess.run([sys.executable, str(SCRIPT), "--state-dir", str(SCRIPT.parent / "state"), "--dry-run"],

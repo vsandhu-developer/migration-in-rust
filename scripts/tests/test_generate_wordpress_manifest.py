@@ -22,6 +22,17 @@ def csv_rows(path):
         return list(csv.reader(f))[1:]
 
 
+class ReaderMappings(unittest.TestCase):
+    def test_admin_checkpoint_cannot_be_used_as_comment_reader_mapping(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "users-state.json"
+            path.write_text(json.dumps({"identity": {"phase": "admin-users"}, "mapping": {"7": 4}}))
+            with self.assertRaisesRegex(ValueError, "not admin-user"):
+                gen.load_user_map([path])
+            path.write_text(json.dumps({"identity": {"phase": "users"}, "mapping": {"7": 42}}))
+            self.assertEqual(gen.load_user_map([path]), {7: 42})
+
+
 class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="ds-gen-test-"))

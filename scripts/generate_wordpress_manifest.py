@@ -599,11 +599,13 @@ def build_foundation(out, meta, site_origin, taxonomy, authors, performers, stud
 
 
 def load_user_map(paths):
-    """wpId -> native user id from users-state.json files, first file wins (old lookup order:
-    users, then admin users). Only the `mapping` object is read; it holds no emails/usernames."""
+    """wpId -> native reader id, first file wins. Admin IDs use a different namespace."""
     user_map = {}
     for path in paths:
-        for wp, uid in json.loads(Path(path).read_text()).get("mapping", {}).items():
+        checkpoint = json.loads(Path(path).read_text())
+        if checkpoint.get("identity", {}).get("phase") == "admin-users":
+            raise ValueError("comment mapping must contain reader-user IDs, not admin-user IDs")
+        for wp, uid in checkpoint.get("mapping", {}).items():
             user_map.setdefault(int(wp), int(uid))
     return user_map
 

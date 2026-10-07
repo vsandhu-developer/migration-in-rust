@@ -8,7 +8,7 @@ Stages, in order (each idempotent and resumable; completion is recorded in
   admin-users         Rust `--phase admin-users` (checkpoint <state>/checkpoints/admin-users)
   users               Rust `--phase users` (+ lookup reconciliation, inside the binary)
   generate            scripts/generate_wordpress_manifest.py -> <state>/manifests
-                      (--user-mapping users then admin-users users-state.json, fallback user 3 by default)
+                      (reader-user mappings only; anonymous fallback must be explicitly selected)
   register            GATE. Lists the manifests to commit to headless-strapi/config/ds-migration-manifests
                       through a reviewed PR and deploy. Never registers anything itself. Passed only by
                       re-running with --continue.
@@ -44,10 +44,10 @@ STAGES = ("admin-users", "users", "generate", "register", "inventory", "foundati
 POST_GATE = STAGES[STAGES.index("register") + 1:]
 MAX_RUN_IDS = 1000
 LABEL_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
-DEFAULT_FALLBACK_USER_ID = 3  # old importer parity (unmapped/anonymous commenters)
+DEFAULT_FALLBACK_USER_ID = 0  # Never attribute anonymous comments to an arbitrary real reader.
 # Settings that shape run identities/manifests; fixed by the first real run of a state directory.
 SETTINGS = ("config", "count", "batch_size", "foundation_scope", "comments_approval", "publication_approval",
-            "fallback_user_id", "no_comments", "run_prefix", "users_file", "admin_users_file", "wp_api")
+            "fallback_user_id", "comment_user_mapping", "no_comments", "run_prefix", "users_file", "admin_users_file", "wp_api")
 DEFAULTS = {"foundation_scope": "all", "run_prefix": "ds-full", "users_file": str(REPO / "data/source/users/users.json"),
             "admin_users_file": str(REPO / "data/source/users/admin_users.json"), "no_comments": False, "wp_api": None}
 
@@ -131,6 +131,8 @@ def resolve_settings(args, state):
     for k in ("users_file", "admin_users_file"):
         if given[k] is not None:
             given[k] = str(Path(given[k]).expanduser().resolve())
+    if given["comment_user_mapping"] is not None:
+        given["comment_user_mapping"] = [str(Path(p).expanduser().resolve()) for p in given["comment_user_mapping"]]
     settings = {}
     for k in SETTINGS:
         if k in stored:
@@ -194,9 +196,10 @@ class Plan:
         if self.s["wp_api"]:
             cmd += ["--wp-api", self.s["wp_api"]]
         if not self.s["no_comments"]:
-            # Old lookup order: regular users first, then admin users.
-            for phase in ("users", "admin-users"):
-                cmd += ["--user-mapping", str(self.account_checkpoint(phase) / "users-state.json")]
+            # Admin IDs belong to a separate table and cannot identify comment readers.
+            paths = self.s["comment_user_mapping"] or [str(self.account_checkpoint("users") / "users-state.json")]
+            for path in paths:
+                cmd += ["--user-mapping", path]
             if self.s["fallback_user_id"]:
                 cmd += ["--fallback-user-id", str(self.s["fallback_user_id"])]
             cmd += ["--comments-approval", self.s["comments_approval"]]
@@ -388,9 +391,10 @@ def stage_generate(state, plan, dry_run):
         say(f"# then: mv {shlex.quote(str(partial))} {shlex.quote(str(final))}")
         return
     if not plan.s["no_comments"]:
-        for phase in ("users", "admin-users"):
-            if not (plan.account_checkpoint(phase) / "users-state.json").exists():
-                raise Stop(f"generate needs the {phase} mapping; complete the {phase} stage first (or use --no-comments)")
+        paths = plan.s["comment_user_mapping"] or [str(plan.account_checkpoint("users") / "users-state.json")]
+        for path in paths:
+            if not Path(path).exists():
+                raise Stop("generate needs all reader-user mappings; complete the users stage or supply --comment-user-mapping")
     if final.exists():
         raise Stop(f"{final} exists without SUMMARY.json; inspect and remove it before regenerating")
     if partial.exists():
@@ -489,7 +493,8 @@ def main(argv=None):
     ap.add_argument("--foundation-scope", choices=("all", "referenced"), help="default all (old Pre-phase parity)")
     ap.add_argument("--comments-approval", help="comments approval label (required unless --no-comments)")
     ap.add_argument("--publication-approval", help="publication approval label (publish + release comments)")
-    ap.add_argument("--fallback-user-id", type=int, help=f"native user for unmapped/anonymous commenters (default {DEFAULT_FALLBACK_USER_ID}, old parity)")
+    ap.add_argument("--fallback-user-id", type=int, help="explicit native reader for unmapped/anonymous commenters; no default")
+    ap.add_argument("--comment-user-mapping", action="append", help="reader checkpoint mapping for comments (repeatable); never use admin-user IDs")
     ap.add_argument("--no-fallback-user", action="store_true", help="drop unmapped/anonymous comments instead of using a fallback user")
     ap.add_argument("--no-comments", action="store_true", help="exclude comments entirely")
     ap.add_argument("--run-prefix", help="importer --run-id prefix (default ds-full)")
