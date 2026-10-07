@@ -179,7 +179,7 @@ async fn mock(state: Arc<Mutex<Cms>>) -> Server {
             let (found, missing): (Vec<_>, Vec<_>) =
                 ids.iter().partition(|i| s.accounts.contains_key(*i));
             return Reply::json(json!({"data":{
-                "found": found.iter().map(|i| json!({"identifier":i,"userId":s.accounts[*i],"foundBy":"email"})).collect::<Vec<_>>(),
+                "found": found.iter().map(|i| json!({"identifier":i,"userId":s.accounts[*i],"foundBy":if i.contains('@') {"email"} else {"username"}})).collect::<Vec<_>>(),
                 "notFound": missing.iter().map(|i| json!({"identifier":i})).collect::<Vec<_>>(),
             }}));
         }
@@ -371,6 +371,90 @@ async fn failed_batch_is_recovered_by_lookup_and_429_is_retried() {
     assert_eq!(failed.failures[0].code, "http_rejected");
     assert_eq!(failed.failures[0].status, Some(400));
     assert_private(&failed, dir3.path());
+}
+
+#[tokio::test]
+async fn username_conflicts_reconcile_to_exact_existing_accounts_and_resume_cleanly() {
+    let state = Arc::new(Mutex::new(Cms::default()));
+    state
+        .lock()
+        .unwrap()
+        .reject
+        .insert(1001, "username_taken".into());
+    state
+        .lock()
+        .unwrap()
+        .accounts
+        .insert("synthetic-user-1".into(), 777);
+    let cms = mock(state.clone()).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut cli = fixture(dir.path(), &cms.origin, Phase::Users, &synthetic_users(1));
+    let original = std::fs::read(cli.users_file.as_ref().unwrap()).unwrap();
+    let report = execute(&cli).await.unwrap();
+    assert_eq!(
+        (
+            report.created,
+            report.existing,
+            report.recovered,
+            report.failed
+        ),
+        (0, 1, 1, 0)
+    );
+    assert_eq!(
+        state.lock().unwrap().lookups,
+        vec![
+            vec!["synthetic1@qa.invalid".to_owned()],
+            vec!["synthetic-user-1".to_owned()]
+        ]
+    );
+    let saved: Value = serde_json::from_slice(
+        &std::fs::read(dir.path().join("checkpoint/users-state.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(saved["mapping"]["1001"], 777);
+    assert_eq!(
+        std::fs::read(cli.users_file.as_ref().unwrap()).unwrap(),
+        original
+    );
+    assert_private(&report, dir.path());
+    cli.resume = true;
+    let resumed = execute(&cli).await.unwrap();
+    assert_eq!(
+        (resumed.already_complete, resumed.batches, resumed.failed),
+        (1, 0, 0)
+    );
+}
+
+#[tokio::test]
+async fn username_fallback_does_not_accept_an_email_match_or_recover_other_failure_types() {
+    for (username, code) in [
+        ("synthetic-login@qa.invalid", "username_taken"),
+        ("synthetic-user-1", "create_failed"),
+    ] {
+        let state = Arc::new(Mutex::new(Cms::default()));
+        state.lock().unwrap().reject.insert(1001, code.into());
+        state.lock().unwrap().accounts.insert(username.into(), 777);
+        let cms = mock(state.clone()).await;
+        let dir = tempfile::tempdir().unwrap();
+        let mut users = synthetic_users(1);
+        users[0]["username"] = json!(username);
+        let cli = fixture(dir.path(), &cms.origin, Phase::Users, &users);
+        let report = execute(&cli).await.unwrap();
+        assert_eq!(
+            (report.existing, report.recovered, report.failed),
+            (0, 0, 1)
+        );
+        let saved: Value = serde_json::from_slice(
+            &std::fs::read(dir.path().join("checkpoint/users-state.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(saved["mapping"].as_object().unwrap().is_empty());
+        assert_eq!(
+            state.lock().unwrap().lookups.len(),
+            if code == "username_taken" { 2 } else { 1 }
+        );
+        assert_private(&report, dir.path());
+    }
 }
 
 #[tokio::test]

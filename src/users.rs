@@ -316,6 +316,19 @@ impl AccountCms {
     }
     /// `identifier -> userId` for found identifiers only.
     pub async fn lookup(&self, identifiers: &[String]) -> Result<BTreeMap<String, u64>> {
+        self.lookup_filtered(identifiers, None).await
+    }
+    async fn lookup_exact_usernames(
+        &self,
+        identifiers: &[String],
+    ) -> Result<BTreeMap<String, u64>> {
+        self.lookup_filtered(identifiers, Some("username")).await
+    }
+    async fn lookup_filtered(
+        &self,
+        identifiers: &[String],
+        found_by: Option<&str>,
+    ) -> Result<BTreeMap<String, u64>> {
         require(
             !identifiers.is_empty() && identifiers.len() <= LOOKUP_MAX_BATCH,
             "users_lookup_batch_invalid",
@@ -341,6 +354,11 @@ impl AccountCms {
                 wanted.contains(&ident.to_owned()),
                 "cms_lookup_response_foreign",
             )?;
+            // An email-shaped login can match another account's email first.
+            // Username reconciliation accepts only an explicit username match.
+            if found_by.is_some_and(|kind| row["foundBy"].as_str() != Some(kind)) {
+                continue;
+            }
             require(
                 found
                     .insert(ident.to_owned(), id)
@@ -500,6 +518,42 @@ pub async fn execute(cli: &Cli) -> Result<UserReport> {
             };
             for (ident, id) in found {
                 for wp in &by_ident[&ident] {
+                    cp.set(
+                        *wp,
+                        Entry {
+                            status: "existing".into(),
+                            user_id: Some(id),
+                            code: None,
+                            http_status: None,
+                        },
+                    );
+                    report.existing += 1;
+                    report.recovered += 1;
+                }
+            }
+            cp.save()?;
+        }
+        // The original file can contain repeated login names with different
+        // emails. Resolve only the server's explicit username_taken failures,
+        // after email reconciliation, using an exact existing username match.
+        // No account attributes are overwritten and source rows stay intact.
+        let mut by_username = BTreeMap::<String, Vec<u64>>::new();
+        for wp in &failed_now {
+            let entry = &cp.entries[wp];
+            if !entry.complete() && entry.code.as_deref() == Some("username_taken") {
+                by_username
+                    .entry(by_id[wp].username.trim().to_owned())
+                    .or_default()
+                    .push(*wp);
+            }
+        }
+        let names = by_username.keys().cloned().collect::<Vec<_>>();
+        for chunk in names.chunks(LOOKUP_MAX_BATCH) {
+            let Ok(found) = cms.lookup_exact_usernames(chunk).await else {
+                continue;
+            };
+            for (name, id) in found {
+                for wp in &by_username[&name] {
                     cp.set(
                         *wp,
                         Entry {
